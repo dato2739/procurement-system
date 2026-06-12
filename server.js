@@ -76,6 +76,27 @@ async function sbStorageDownload(path) {
   } catch(e) { console.error('Storage download error:', e.message); return null; }
 }
 
+// Delete all files under a request's folder (prefix), e.g. "req_123/*"
+async function sbStorageDeleteFolder(prefix) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return false;
+  try {
+    const listRes = await fetch(`${SUPABASE_URL}/storage/v1/object/list/${BUCKET}`, {
+      method: 'POST',
+      headers: { ...SB_H(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prefix: prefix + '/' })
+    });
+    const items = await listRes.json();
+    if (!Array.isArray(items) || items.length === 0) return true;
+    const prefixes = items.map(it => `${prefix}/${it.name}`);
+    await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}`, {
+      method: 'DELETE',
+      headers: { ...SB_H(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prefixes })
+    });
+    return true;
+  } catch(e) { console.error('Storage delete error:', e.message); return false; }
+}
+
 // ── File processing → msgContent parts ──────────────────────────
 async function processFile(buffer, originalname) {
   const parts = [];
@@ -139,7 +160,19 @@ function contentTypeFor(originalname) {
 // ── Health check ──────────────────────────────────────────────
 app.get('/', (_, res) => res.json({ status: 'ok', version: '3.1' }));
 
-// ── /file/:requestId/:filename — proxy download from Supabase Storage ─
+// ── DELETE /request/:id — removes DB row + all storage files ──
+app.delete('/request/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    await sbStorageDeleteFolder(id);
+    if (SUPABASE_URL && SUPABASE_KEY) {
+      await fetch(`${SUPABASE_URL}/rest/v1/requests?id=eq.${id}`, { method: 'DELETE', headers: SB_H() });
+    }
+    res.json({ ok: true });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 app.get('/file/:requestId/:filename', async (req, res) => {
   try {
     const path = `${req.params.requestId}/${req.params.filename}`;
@@ -229,9 +262,10 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
         '- **აღწერა:** 1-2 წინადადება რა კეთდება\n' +
         '- **ბიუჯეტი:** თუ ფაილებში მითითებულია თანხა, მიუთითე; თუ არა — "არ არის მითითებული"\n\n' +
         '## ძირითადი სამუშაოები\n' +
-        'მთავარი სამუშაოები და მოცულობები (ბეტონი მ³, არმატურა კგ და სხვა) ცხრილის ან ჩამონათვალის სახით\n\n' +
+        'მხოლოდ ყველაზე მნიშვნელოვანი პოზიციები, **მაქსიმალურად მოკლედ** — ერთი ან ორი ცხრილი, არა 3-4. გააერთიანე მსგავსი კატეგორიები, გამოტოვე უმნიშვნელო/მცირე პოზიციები. საერთო მოცულობა არ უნდა აღემატებოდეს 8-10 სტრიქონს.\n\n' +
         '## შეუსაბამობები\n' +
-        'PDF-სა და XLS-ს შორის ნაპოვნი შეუსაბამობები. თითო პუნქტში მიუთითე **კონკრეტული მდებარეობა** ფაილში (გვერდი/ცხრილის სტრიქონი/პოზიციის №), რომ მკითხველს ადვილად მოეძებნოს. თუ შეუსაბამობა არ ნაპოვნია, დაწერე "შეუსაბამობები არ ნაპოვნია".\n\n' +
+        'მხოლოდ **მნიშვნელოვანი, რეალური** შეუსაბამობები PDF-სა და XLS-ს შორის — ისეთები, რაც გავლენას ახდენს ბიუჯეტზე, მოცულობებზე ან ტექნოლოგიაზე. ' +
+        'ყურდაღება არ მიაქციო წვრილმან/უმნიშვნელო სხვაობებს (მაგ. დამრგვალება, ერთეულის ჩასწორება, უმნიშვნელო % განსხვავება). თითო პუნქტში მიუთითე **ზუსტი მდებარეობა**: გვერდი/ცხრილი/სტრიქონის №. თუ მნიშვნელოვანი შეუსაბამობა არ ნაპოვნია, დაწერე "მნიშვნელოვანი შეუსაბამობები არ ნაპოვნია".\n\n' +
         '## დასკვნა\n' +
         '2-3 წინადადებით ზოგადი შეფასება და რეკომენდაცია.\n\n' +
         'წეს — არანაირი ტექნიკური სიმბოლო ან კოდის ბლოკი, მხოლოდ ზემოთ მითითებული Markdown სათაურები და bold.';
@@ -267,7 +301,7 @@ async function callAI(system, messages) {
       'x-api-key':         ANTHROPIC_KEY,
       'anthropic-version': '2023-06-01'
     },
-    body: JSON.stringify({ model: MODEL, max_tokens: 2000, system, messages })
+    body: JSON.stringify({ model: MODEL, max_tokens: 4096, system, messages })
   });
   const d = await r.json();
   if (d.error) throw new Error(d.error.message);
