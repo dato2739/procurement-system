@@ -137,7 +137,21 @@ function contentTypeFor(originalname) {
 }
 
 // ── Health check ──────────────────────────────────────────────
-app.get('/', (_, res) => res.json({ status: 'ok', version: '3.0' }));
+app.get('/', (_, res) => res.json({ status: 'ok', version: '3.1' }));
+
+// ── /file/:requestId/:filename — proxy download from Supabase Storage ─
+app.get('/file/:requestId/:filename', async (req, res) => {
+  try {
+    const path = `${req.params.requestId}/${req.params.filename}`;
+    const buf = await sbStorageDownload(path);
+    if (!buf) return res.status(404).send('ფაილი ვერ მოიძებნა');
+    res.setHeader('Content-Type', contentTypeFor(req.params.filename));
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(req.params.filename)}"`);
+    res.send(buf);
+  } catch(e) {
+    res.status(500).send(e.message);
+  }
+});
 
 // ── /analyze ──────────────────────────────────────────────────
 app.post('/analyze', upload.array('files', 20), async (req, res) => {
