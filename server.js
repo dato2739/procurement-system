@@ -146,6 +146,7 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
     const uploadedFiles = req.files || [];
 
     let msgContent = [];
+    let filesMeta = [];
 
     if (uploadedFiles.length > 0) {
       for (const file of uploadedFiles) {
@@ -154,7 +155,6 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
       }
 
       if (requestId) {
-        const filesMeta = [];
         for (const file of uploadedFiles) {
           const path = `${requestId}/${file.originalname}`;
           const ok = await sbStorageUpload(path, file.buffer, contentTypeFor(file.originalname));
@@ -167,7 +167,7 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
 
     } else if (requestId) {
       const row = await sbGetRequest(requestId);
-      const filesMeta = (row && row.files) || [];
+      filesMeta = (row && row.files) || [];
       for (const fm of filesMeta) {
         const buf = await sbStorageDownload(fm.path);
         if (buf) {
@@ -230,7 +230,7 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
         });
       }
 
-      return res.json({ type: 'analysis', summary });
+      return res.json({ type: 'analysis', summary, files: filesMeta });
     }
 
   } catch(e) {
