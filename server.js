@@ -52,7 +52,24 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
       const ext = file.originalname.split('.').pop().toLowerCase();
 
       if (ext === 'pdf') {
-        const b64 = file.buffer.toString('base64');
+        let buf = file.buffer;
+        // Anthropic request limit ~32MB; base64 adds ~33%, so cap raw PDF at ~20MB
+        if (buf.length > 20 * 1024 * 1024) {
+          try {
+            const { PDFDocument } = require('pdf-lib');
+            const src = await PDFDocument.load(buf, { ignoreEncryption: true });
+            const total = src.getPageCount();
+            const maxPages = Math.min(total, 15);
+            const trimmed = await PDFDocument.create();
+            const pages = await trimmed.copyPages(src, [...Array(maxPages).keys()]);
+            pages.forEach(p => trimmed.addPage(p));
+            buf = Buffer.from(await trimmed.save());
+            msgContent.push({ type: 'text', text: `[შენიშვნა: ${file.originalname} — ${total} გვერდიდან გაანალიზებულია პირველი ${maxPages}]` });
+          } catch(e) {
+            console.error('PDF trim error:', e.message);
+          }
+        }
+        const b64 = buf.toString('base64');
         msgContent.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } });
         msgContent.push({ type: 'text', text: `=== PDF: ${file.originalname} ===` });
 
