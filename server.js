@@ -467,5 +467,91 @@ app.post('/compare-pricing', upload.single('contractor_file'), async (req, res) 
   }
 });
 
+// ── POST /import-prices — საწყისი ფასების ბაზის შევსება ─────────
+app.post('/import-prices', upload.array('files', 50), async (req, res) => {
+  try {
+    const { project_name, contractor, date, currency } = req.body;
+    const files = req.files || [];
+    if (!files.length) return res.status(400).json({ error: 'ფაილი ვერ მოიძებნა' });
+
+    const XLSX = require('xlsx');
+    const cur = currency || '₾';
+    const dt  = date || new Date().toISOString().slice(0, 10);
+    const results = [];
+
+    for (const file of files) {
+      // Parse XLS
+      const wb = XLSX.read(file.buffer, { type: 'buffer' });
+      let text = '';
+      wb.SheetNames.forEach(name => {
+        const ws   = wb.Sheets[name];
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        text += `=== ${name} ===\n`;
+        rows.filter(r => r.some(c => c !== '')).slice(0, 200).forEach(row => {
+          text += row.map(c => String(c)).join('\t') + '\n';
+        });
+      });
+
+      // Upload to Storage
+      const storagePath = `historical/${dt}/${file.originalname}`;
+      await sbStorageUpload(storagePath, file.buffer, contentTypeFor(file.originalname));
+
+      // AI extracts price items
+      const prompt =
+        `ეს XLS ფაილია განფასებით:\n${text.slice(0, 9000)}\n\n` +
+        `ამოიღე ყველა პოზიცია. გიპასუხე მხოლოდ JSON მასივით, სხვა ტექსტის გარეშე:\n` +
+        `[{"work_name":"სამუშოს სახელი","quantity":0,"unit":"ერთ.","unit_price":0}]\n` +
+        `- unit_price: ერთეულის ფასი რიცხვად\n` +
+        `- unit: ერთეული (მ², კგ, ც, გრ.მ. და ა.შ.)\n` +
+        `თუ ერთეულის ფასი ვერ გამოყოფ — გამოტოვე. JSON მასივი — ზუსტად, სხვა არარა.`;
+
+      const raw = await callAI(
+        'შენ ხარ ფინანსური ექსპერტი. XLS-დან ფასების ამოღება. მხოლოდ JSON მასივი.',
+        [{ role: 'user', content: prompt }]
+      );
+
+      let items = [];
+      try {
+        const cleaned = raw.replace(/```json|```/g, '').trim();
+        const match = cleaned.match(/\[[\s\S]*\]/);
+        if (match) items = JSON.parse(match[0]);
+      } catch (e) { console.error('JSON parse:', file.originalname, e.message); }
+
+      let saved = 0;
+      const projName = project_name || file.originalname.replace(/\.(xls|xlsx)$/i, '');
+      const contrName = contractor || 'საწყისი';
+
+      for (const item of items) {
+        if (!item.work_name || !item.unit_price) continue;
+        const r = await fetch(`${SUPABASE_URL}/rest/v1/unit_prices`, {
+          method: 'POST',
+          headers: { ...SB_H(), 'Prefer': 'return=minimal' },
+          body: JSON.stringify({
+            id: 'up_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+            project_name: projName,
+            contractor:   contrName,
+            work_name:    String(item.work_name).trim(),
+            quantity:     parseFloat(item.quantity) || 0,
+            unit:         String(item.unit || '').trim(),
+            unit_price:   parseFloat(item.unit_price) || 0,
+            currency:     cur,
+            date:         dt,
+            request_id:   ''
+          })
+        });
+        if (r.ok) saved++;
+      }
+
+      results.push({ file: file.originalname, storagePath, itemsSaved: saved, total: items.length });
+    }
+
+    res.json({ ok: true, results });
+
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

@@ -340,6 +340,9 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
     <a class="nav-item" style="opacity:0.4;cursor:not-allowed">
       <span class="icon">📊</span> ფასების ბაზა
     </a>
+    <a class="nav-item" id="nav-import" onclick="showView('import')">
+      <span class="icon">📥</span> ფასების იმპ.
+    </a>
   </div>
 </nav>
 
@@ -562,6 +565,59 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
   </div><!-- /content -->
 </div><!-- /main -->
 
+<!-- ===== VIEW 3: IMPORT ===== -->
+<div id="view-import" style="display:none">
+  <div style="max-width:600px">
+    <div class="section-title" style="margin-bottom:20px">📥 ფასების ბაზის შევსება</div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="form-row">
+        <div class="form-group">
+          <label>პროექტი <span style="font-size:10px;color:var(--text3)">(ავტო — ფოლდ. სახ.)</span></label>
+          <input type="text" id="importProject" placeholder="ავტომატურად შეივსება">
+        </div>
+        <div class="form-group">
+          <label>კონტრაქტორი</label>
+          <input type="text" id="importContractor" value="საწყისი">
+        </div>
+      </div>
+      <div class="form-row" style="margin-top:12px">
+        <div class="form-group">
+          <label>თარიღი</label>
+          <input type="date" id="importDate">
+        </div>
+        <div class="form-group">
+          <label>ვალუტა</label>
+          <select id="importCurrency">
+            <option value="₾">₾ ლარი</option>
+            <option value="$">$ დოლარი</option>
+            <option value="€">€ ევრო</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>📁 ფოლდერის ატვირთვა — XLS/XLSX ფაილებით</label>
+      <div class="file-zone" id="importZone" onclick="document.getElementById('importFolderInput').click()">
+        <input type="file" id="importFolderInput" webkitdirectory multiple style="display:none"
+          onchange="handleImportFolderSelect(this)">
+        <div class="file-icon">📁</div>
+        <div class="file-label" id="importZoneLabel">ფოლდერის არჩევა</div>
+        <div class="file-sub">XLS/XLSX ფაილები ავტომატურად გაიფილტრება</div>
+      </div>
+    </div>
+
+    <div id="importFolderInfo" style="display:none;margin-top:8px"></div>
+
+    <div style="margin-top:16px">
+      <button class="btn btn-primary" onclick="runImport()" id="btnImport" disabled>📥 ატვირთვა unit_prices-ში</button>
+    </div>
+
+    <div id="importResults" style="display:none;margin-top:16px"></div>
+  </div>
+</div>
+
 <!-- ===== MODAL: NEW REQUEST ===== -->
 <div class="modal-overlay" id="modalOverlay" onclick="closeModalOut(event)">
   <div class="modal">
@@ -730,6 +786,18 @@ function nextNum() {
 function showView(v) {
   document.getElementById('view-requests').style.display = v === 'requests' ? 'block' : 'none';
   document.getElementById('view-detail').style.display   = v === 'detail'   ? 'block' : 'none';
+  document.getElementById('view-import').style.display   = v === 'import'   ? 'block' : 'none';
+  // Nav active state
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  if (v === 'requests') document.querySelector('.nav-item[onclick*="requests"]')?.classList.add('active');
+  if (v === 'import')   document.getElementById('nav-import')?.classList.add('active');
+  if (v === 'import') {
+    document.getElementById('topbarTitle').textContent = 'ფასების იმპ.';
+    document.getElementById('topbarSub').textContent = '/ საწყისი ბაზა';
+    // Set today as default date if empty
+    const d = document.getElementById('importDate');
+    if (d && !d.value) d.value = new Date().toISOString().slice(0, 10);
+  }
   if (v === 'requests') {
     document.getElementById('topbarTitle').textContent = 'მოთხოვნები';
     document.getElementById('topbarSub').textContent = '/ მოდული 1';
@@ -1113,6 +1181,68 @@ let clarifyAnswers = {};
 let chatHistory = []; // [{role, text}]
 let chatFileContext = ''; // summarized file content for chat
 let pricingFile = null; // contractor XLS file object
+let importFiles = []; // bulk import XLS files
+
+// ── ფასების ბაზის შევსება (იმპორტი) ────────────────────────────
+
+function handleImportFolderSelect(input) {
+  const all = Array.from(input.files);
+  importFiles = all.filter(f => /\.(xls|xlsx)$/i.test(f.name));
+  if (!importFiles.length) { showToast('⚠️ XLS/XLSX ფაილი ვერ მოიძებნა', 'error'); return; }
+
+  const folderName = all[0]?.webkitRelativePath?.split('/')[0] || 'ფოლდერი';
+  const projInput = document.getElementById('importProject');
+  if (projInput && !projInput.value) projInput.value = folderName;
+
+  document.getElementById('importZoneLabel').textContent = '✅ ' + importFiles.length + ' ფაილი';
+  document.getElementById('importZone').classList.add('has-file');
+
+  const info = document.getElementById('importFolderInfo');
+  info.style.display = 'block';
+  info.innerHTML = `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 14px">
+    <div style="font-size:11px;font-weight:700;color:var(--green);margin-bottom:6px">✅ ${importFiles.length} XLS/XLSX · ფოლდ: ${folderName}</div>
+    ${importFiles.map(f => `<div style="font-size:11px;color:var(--text2)">📊 ${f.name} <span style="color:var(--text3)">(${(f.size/1024).toFixed(0)} KB)</span></div>`).join('')}
+  </div>`;
+  document.getElementById('btnImport').disabled = false;
+}
+
+async function runImport() {
+  if (!importFiles.length) return;
+  const btn = document.getElementById('btnImport');
+  const resultsEl = document.getElementById('importResults');
+  btn.disabled = true; btn.textContent = '⏳ მიმდინარეობს...';
+  resultsEl.style.display = 'block';
+  resultsEl.innerHTML = '<div style="font-size:12px;color:var(--text2)">ფაილები სერვერზე იგზავნება... (AI ამოღება — შესაძლოა 1-2 წთ)</div>';
+
+  try {
+    const fd = new FormData();
+    fd.append('project_name', document.getElementById('importProject').value.trim());
+    fd.append('contractor',   document.getElementById('importContractor').value.trim() || 'საწყისი');
+    fd.append('date',         document.getElementById('importDate').value);
+    fd.append('currency',     document.getElementById('importCurrency').value);
+    for (const f of importFiles) fd.append('files', f, f.name);
+
+    const resp = await fetch(BACKEND_URL + '/import-prices', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+
+    const total = data.results.reduce((s, r) => s + r.itemsSaved, 0);
+    resultsEl.innerHTML = data.results.map(r => `
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:8px">
+        <div style="font-size:12px;font-weight:600;color:var(--text)">📊 ${r.file}</div>
+        <div style="font-size:11px;color:var(--green);margin-top:3px">✅ ${r.itemsSaved} / ${r.total} ფასი შეინახა</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:2px">☁️ ${r.storagePath}</div>
+      </div>`).join('') +
+      `<div style="font-size:13px;font-weight:600;color:var(--green);margin-top:8px">სულ: ${total} პოზიცია</div>`;
+
+    showToast('✅ ' + total + ' ფასი unit_prices-ში', 'success');
+  } catch(e) {
+    resultsEl.innerHTML = `<div style="font-size:12px;color:var(--red)">⚠️ ${e.message}</div>`;
+    showToast('⚠️ ' + e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '📥 ატვირთვა unit_prices-ში';
+  }
+}
 
 // ── ეტაპი B: განფასების შედარება ───────────────────────────────
 
