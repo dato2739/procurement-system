@@ -496,6 +496,22 @@ app.post('/compare-pricing', upload.single('contractor_file'), async (req, res) 
   }
 });
 
+// ── GET /prices — ფასების ბაზის წამოღება ────────────────────────
+app.get('/prices', async (req, res) => {
+  try {
+    if (!SUPABASE_URL || !SUPABASE_KEY) return res.json({ items: [] });
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/unit_prices?select=*&order=created_at.desc&limit=2000`,
+      { headers: SB_H() }
+    );
+    const items = await r.json();
+    res.json({ items: Array.isArray(items) ? items : [] });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── POST /upload-files — ფაილების Storage-ში ატვირთვა (ანალიზის გარეშე) ──
 app.post('/upload-files', upload.array('files', 50), async (req, res) => {
   try {
@@ -557,11 +573,13 @@ app.post('/import-prices', upload.array('files', 50), async (req, res) => {
 
       const prompt =
         `ეს XLS ფაილია განფასებით:\n${text.slice(0, 9000)}\n\n` +
-        `ამოიღე ყველა პოზიცია. გიპასუხე მხოლოდ JSON მასივით, სხვა ტექსტის გარეშე:\n` +
+        `ამოიღე მხოლოდ ის პოზიციები, რომლებსაც აქვთ შევსებული ერთეულის ფასი (>0). ` +
+        `გიპასუხე მხოლოდ JSON მასივით, სხვა ტექსტის გარეშე:\n` +
         `[{"work_name":"სამუშოს სახელი","quantity":0,"unit":"ერთ.","unit_price":0}]\n` +
-        `- unit_price: ერთეულის ფასი რიცხვად\n` +
+        `- unit_price: ერთეულის ფასი რიცხვად (აუცილებლად >0)\n` +
         `- unit: ერთეული (მ², კგ, ც, გრ.მ. და ა.შ.)\n` +
-        `თუ ერთეულის ფასი ვერ გამოყოფ — გამოტოვე. JSON მასივი — ზუსტად, სხვა არარა.`;
+        `**მნიშვნელოვანი:** თუ პოზიციას ფასი არ აქვს ან 0-ია — საერთოდ გამოტოვე, JSON-ში არ შეიტანო. ` +
+        `მხოლოდ განფასებული პოზიციები. JSON მასივი — ზუსტად, სხვა არარა.`;
 
       const raw = await callAI(
         'შენ ხარ ფინანსური ექსპერტი. XLS-დან ფასების ამოღება. მხოლოდ JSON მასივი.',
@@ -580,7 +598,8 @@ app.post('/import-prices', upload.array('files', 50), async (req, res) => {
       const contrName = contractor || 'საწყისი';
 
       for (const item of items) {
-        if (!item.work_name || !item.unit_price) continue;
+        const price = parseFloat(item.unit_price) || 0;
+        if (!item.work_name || price <= 0) continue;  // only priced positions
         const r = await fetch(`${SUPABASE_URL}/rest/v1/unit_prices`, {
           method: 'POST',
           headers: { ...SB_H(), 'Prefer': 'return=minimal' },
@@ -591,7 +610,7 @@ app.post('/import-prices', upload.array('files', 50), async (req, res) => {
             work_name:    String(item.work_name).trim(),
             quantity:     parseFloat(item.quantity) || 0,
             unit:         String(item.unit || '').trim(),
-            unit_price:   parseFloat(item.unit_price) || 0,
+            unit_price:   price,
             currency:     cur,
             date:         dt,
             request_id:   ''
