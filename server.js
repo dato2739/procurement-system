@@ -76,6 +76,19 @@ async function sbStorageDownload(path) {
   } catch(e) { console.error('Storage download error:', e.message); return null; }
 }
 
+// Delete specific storage paths by exact path list
+async function sbStorageDeletePaths(paths) {
+  if (!SUPABASE_URL || !SUPABASE_KEY || !paths.length) return false;
+  try {
+    await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}`, {
+      method: 'DELETE',
+      headers: { ...SB_H(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prefixes: paths })
+    });
+    return true;
+  } catch(e) { console.error('Storage delete paths error:', e.message); return false; }
+}
+
 // Delete all files under a request's folder (prefix), e.g. "req_123/*"
 async function sbStorageDeleteFolder(prefix) {
   if (!SUPABASE_URL || !SUPABASE_KEY) return false;
@@ -177,13 +190,36 @@ function contentTypeFor(originalname) {
 // ── Health check ──────────────────────────────────────────────
 app.get('/', (_, res) => res.json({ status: 'ok', version: '3.1' }));
 
-// ── DELETE /request/:id — removes DB row + all storage files ──
+// ── DELETE /request/:id — removes DB row + all storage files + linked prices ──
 app.delete('/request/:id', async (req, res) => {
   try {
     const id = req.params.id;
-    await sbStorageDeleteFolder(id);
     if (SUPABASE_URL && SUPABASE_KEY) {
+      // Get request to find num, files, date
+      const row = await sbGetRequest(id);
+      const reqNum = row && row.num;
+      const reqFiles = (row && row.files) || [];
+      const reqDate = row && row.date;
+
+      // 1. Delete request folder ({id}/*)
+      await sbStorageDeleteFolder(id);
+
+      // 2. Delete historical archive copies (historical/{date}/{filename})
+      if (reqDate && reqFiles.length) {
+        const histPaths = reqFiles.map(f => `historical/${reqDate}/${f.name}`);
+        await sbStorageDeletePaths(histPaths);
+      }
+
+      // 3. Delete the request row
       await fetch(`${SUPABASE_URL}/rest/v1/requests?id=eq.${id}`, { method: 'DELETE', headers: SB_H() });
+
+      // 4. Delete linked prices (unit_prices.request_id == num)
+      if (reqNum) {
+        await fetch(`${SUPABASE_URL}/rest/v1/unit_prices?request_id=eq.${encodeURIComponent(reqNum)}`,
+          { method: 'DELETE', headers: SB_H() });
+      }
+    } else {
+      await sbStorageDeleteFolder(id);
     }
     res.json({ ok: true });
   } catch(e) {
@@ -547,9 +583,19 @@ app.post('/import-prices', upload.array('files', 50), async (req, res) => {
     const dt  = date || new Date().toISOString().slice(0, 10);
     const results = [];
 
+    // ფოლდერის სახელი = მოთხოვნის № = პროექტი
+    const reqNum = (project_name || '').trim() || ('import_' + Date.now());
+    const requestId = 'req_' + reqNum.replace(/[^a-zA-Z0-9_\-]/g, '_') + '_' + Date.now();
+    const filesMeta = [];
+
     for (const file of files) {
+      // 1. Storage — ისტორიული არქივი
       const storagePath = `historical/${dt}/${file.originalname}`;
       await sbStorageUpload(storagePath, file.buffer, contentTypeFor(file.originalname));
+      // 2. Storage — მოთხოვნის სივრცე (რომ მოთხოვნის დეტალებში ჩანდეს)
+      const reqPath = `${requestId}/${file.originalname}`;
+      const ok = await sbStorageUpload(reqPath, file.buffer, contentTypeFor(file.originalname));
+      if (ok) filesMeta.push({ name: file.originalname, path: reqPath, size: file.size, type: file.mimetype });
 
       const isXls = /\.(xls|xlsx)$/i.test(file.originalname);
 
@@ -594,7 +640,6 @@ app.post('/import-prices', upload.array('files', 50), async (req, res) => {
       } catch (e) { console.error('JSON parse:', file.originalname, e.message); }
 
       let saved = 0;
-      const projName = project_name || file.originalname.replace(/\.(xls|xlsx)$/i, '');
       const contrName = contractor || 'საწყისი';
 
       for (const item of items) {
@@ -605,7 +650,7 @@ app.post('/import-prices', upload.array('files', 50), async (req, res) => {
           headers: { ...SB_H(), 'Prefer': 'return=minimal' },
           body: JSON.stringify({
             id: 'up_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
-            project_name: projName,
+            project_name: reqNum,
             contractor:   contrName,
             work_name:    String(item.work_name).trim(),
             quantity:     parseFloat(item.quantity) || 0,
@@ -613,7 +658,7 @@ app.post('/import-prices', upload.array('files', 50), async (req, res) => {
             unit_price:   price,
             currency:     cur,
             date:         dt,
-            request_id:   ''
+            request_id:   reqNum
           })
         });
         if (r.ok) saved++;
@@ -622,7 +667,24 @@ app.post('/import-prices', upload.array('files', 50), async (req, res) => {
       results.push({ file: file.originalname, storagePath, itemsSaved: saved, total: items.length });
     }
 
-    res.json({ ok: true, results });
+    // მოთხოვნის შექმნა — "დასრულებული" სტატუსით
+    if (filesMeta.length > 0) {
+      await sbSave({
+        id: requestId,
+        num: reqNum,
+        project: reqNum,
+        initiator: contractor || 'საწყისი',
+        cat: 'service',
+        priority: 'mid',
+        status: 'done',
+        files: filesMeta,
+        date: dt,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      });
+    }
+
+    res.json({ ok: true, results, requestId, requestNum: reqNum });
 
   } catch (e) {
     console.error(e);
