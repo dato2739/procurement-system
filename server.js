@@ -255,6 +255,32 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
         return res.status(400).json({ error: 'ფაილები ვერ ვიპოვე — ატვირთე ან ხელახლა გააგზავნე' });
       }
 
+      // ── Stage C: ისტორიული ფასები unit_prices-დან ──────────────
+      let histPricesContext = '';
+      if (SUPABASE_URL && SUPABASE_KEY) {
+        try {
+          const hpr = await fetch(
+            `${SUPABASE_URL}/rest/v1/unit_prices?select=work_name,unit,unit_price,currency&limit=500`,
+            { headers: SB_H() }
+          );
+          const hitems = await hpr.json();
+          if (Array.isArray(hitems) && hitems.length > 0) {
+            const hmap = {};
+            for (const it of hitems) {
+              const key = (it.work_name || '').toLowerCase().trim();
+              if (!key) continue;
+              if (!hmap[key]) hmap[key] = { work_name: it.work_name, unit: it.unit || '', currency: it.currency || '₾', prices: [] };
+              hmap[key].prices.push(parseFloat(it.unit_price) || 0);
+            }
+            const hlines = Object.values(hmap).map(g => {
+              const avg = (g.prices.reduce((s, p) => s + p, 0) / g.prices.length).toFixed(2);
+              return `${g.work_name} | ${avg} ${g.currency}/${g.unit}`;
+            });
+            if (hlines.length) histPricesContext = hlines.slice(0, 80).join('\n');
+          }
+        } catch (e) { console.error('unit_prices fetch:', e.message); }
+      }
+
       const analysisPrompt = contextText +
         '\nგააკეთე ტექნიკური ანალიზი ზუსტად ამ სტრუქტურით (Markdown-ით, ## სათაურები, **bold** მნიშვნელოვანი ტერმინებისთვის):\n\n' +
         '## მოკლე შინაარსი\n' +
@@ -268,7 +294,16 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
         'ყურდაღება არ მიაქციო წვრილმან/უმნიშვნელო სხვაობებს (მაგ. დამრგვალება, ერთეულის ჩასწორება, უმნიშვნელო % განსხვავება). თითო პუნქტში მიუთითე **ზუსტი მდებარეობა**: გვერდი/ცხრილი/სტრიქონის №. თუ მნიშვნელოვანი შეუსაბამობა არ ნაპოვნია, დაწერე "მნიშვნელოვანი შეუსაბამობები არ ნაპოვნია".\n\n' +
         '## დასკვნა\n' +
         '2-3 წინადადებით ზოგადი შეფასება და რეკომენდაცია.\n\n' +
-        'წეს — არანაირი ტექნიკური სიმბოლო ან კოდის ბლოკი, მხოლოდ ზემოთ მითითებული Markdown სათაურები და bold.';
+        'წეს — არანაირი ტექნიკური სიმბოლო ან კოდის ბლოკი, მხოლოდ ზემოთ მითითებული Markdown სათაურები და bold.' +
+        (histPricesContext
+          ? '\n\n## 💰 დაახლოებითი ღირებულება\n' +
+            'ქვემოთ მოცემულია ისტორიული ერთეულის ფასები ბაზიდან (ფორმ: სამუშაო | საშ.ფასი ₾/ერთ.):\n' +
+            histPricesContext +
+            '\nშეადარე ამ ფაილებიდან ნაპოვნი სამუშაოები ისტორიულ ფასებს (case-insensitive, მოქნილი matching). ' +
+            'გამოთვალე: Σ(რაოდ × ისტ.საშ.ფასი) ყველა დამთხვეული პოზიციისთვის. ' +
+            'გამოიტანე ბოლოს: "სავარაუდო ღირებულება: ~X ₾ (Y პოზ. ბაზით, Z — ფასი უცნობია)"'
+          : '\n\n## 💰 დაახლოებითი ღირებულება\n' +
+            'დაწერე: "ფასების ბაზა ჯერ ცარიელია — ეტაპ B-ის შემდეგ ჩაივსება."');
 
       msgContent.push({ type: 'text', text: analysisPrompt });
       const summary = await callAI(systemPrompt, [{ role: 'user', content: msgContent }]);
@@ -307,6 +342,119 @@ async function callAI(system, messages) {
   if (d.error) throw new Error(d.error.message);
   return (d.content || []).map(c => c.text || '').join('');
 }
+
+// ── POST /compare-pricing — ეტაპი B ─────────────────────────────
+app.post('/compare-pricing', upload.single('contractor_file'), async (req, res) => {
+  try {
+    const { requestId, contractorName, pricingDate, currency } = req.body;
+    const cf = req.file;
+    if (!cf || !requestId) {
+      return res.status(400).json({ error: 'requestId და კონტრაქტორის ფაილი სავალდებულოა' });
+    }
+
+    const row = await sbGetRequest(requestId);
+    if (!row) return res.status(404).json({ error: 'მოთხოვნა ვერ მოიძებნა' });
+
+    const ourFiles = (row.files || []).filter(f => /\.(xls|xlsx)$/i.test(f.name));
+    if (!ourFiles.length) {
+      return res.status(400).json({ error: 'მოთხოვნაში XLS/XLSX ვერ მოიძებნა — ჯერ ეტაპ A ჩატარდეს' });
+    }
+
+    const XLSX = require('xlsx');
+    const xlsText = (buf) => {
+      const wb = XLSX.read(buf, { type: 'buffer' });
+      let t = '';
+      wb.SheetNames.forEach(name => {
+        const ws = wb.Sheets[name];
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        t += `=== ${name} ===\n`;
+        rows.filter(r => r.some(c => c !== '')).slice(0, 200).forEach(row => {
+          t += row.map(c => String(c)).join('\t') + '\n';
+        });
+      });
+      return t.slice(0, 9000);
+    };
+
+    const ourBuf = await sbStorageDownload(ourFiles[0].path);
+    if (!ourBuf) return res.status(500).json({ error: 'XLS ვერ ჩამოიტვირთა Storage-დან' });
+
+    const ourText  = xlsText(ourBuf);
+    const contrText = xlsText(cf.buffer);
+
+    // Upload contractor file to storage
+    const cfPath = `${requestId}/contractor/${cf.originalname}`;
+    await sbStorageUpload(cfPath, cf.buffer, contentTypeFor(cf.originalname));
+
+    const cname = contractorName || 'კონტრაქტორი';
+    const prompt =
+      `შეადარე ორი XLS ფაილი:\n\n` +
+      `=== ჩვენი სამუშაოთა ჩამონათვალი ===\n${ourText}\n\n` +
+      `=== კონტრაქტორის (${cname}) განფასება ===\n${contrText}\n\n` +
+      `გამოავლინე შეუსაბამობები. დასახელებების დასაბმელად — ჭკვიანი matching ` +
+      `(case-insensitive, სინონიმები, მოქნილი ფორმულირება). ` +
+      `მხოლოდ მნიშვნელოვანი სხვაობები (>5% ან სრულად გამოტოვებული).\n\n` +
+      `უპასუხე ამ სტრუქტურით (Markdown):\n\n` +
+      `## ფასობრივი შეუსაბამობები\n` +
+      `| სამუშაო | ჩვენი ერთ.ფასი | კონტ. ერთ.ფასი | სხვაობა | % |\n|---|---|---|---|---|\n\n` +
+      `## გამოტოვებული პოზიციები (ჩვენთან → კონტრაქტორთან არა)\n- ...\n\n` +
+      `## ზედმეტი პოზიციები (კონტრაქტორთან → ჩვენთან არა)\n- ...\n\n` +
+      `## დასკვნა\n2-3 წინადადება: ჯამური სხვაობა, მთავარი რისკები.\n\n` +
+      `---JSON_PRICES---\n` +
+      `[{"work_name":"...","quantity":0,"unit":"...","unit_price":0}]\n` +
+      `---JSON_END---\n` +
+      `(JSON — მხოლოდ კონტ. პოზიციები, რომლებიც ჩვენს ჩამონათვალშიც გვხვდება. unit_price — ლარი/ერთ.)`;
+
+    const raw = await callAI(
+      'შენ ხარ ტექნიკური და ფინანსური ექსპერტი. XLS შედარება — ზუსტი, კონკრეტული, ქართულად.',
+      [{ role: 'user', content: prompt }]
+    );
+
+    // Extract JSON prices
+    let priceItems = [];
+    const jm = raw.match(/---JSON_PRICES---\n?([\s\S]*?)\n?---JSON_END---/);
+    if (jm) { try { priceItems = JSON.parse(jm[1].trim()); } catch (e) { console.error('price JSON parse:', e.message); } }
+    const summary = raw.replace(/---JSON_PRICES---[\s\S]*?---JSON_END---/g, '').trim();
+
+    // Save prices to unit_prices (Stage C data)
+    const cur = currency || '₾';
+    const dt = pricingDate || new Date().toISOString().split('T')[0];
+    let savedCount = 0;
+    for (const item of priceItems) {
+      if (!item.work_name || item.unit_price == null) continue;
+      const r2 = await fetch(`${SUPABASE_URL}/rest/v1/unit_prices`, {
+        method: 'POST',
+        headers: { ...SB_H(), 'Prefer': 'return=minimal' },
+        body: JSON.stringify({
+          id: 'up_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+          project_name: row.project || '',
+          contractor:   cname,
+          work_name:    item.work_name,
+          quantity:     item.quantity || 0,
+          unit:         item.unit || '',
+          unit_price:   item.unit_price || 0,
+          currency:     cur,
+          date:         dt,
+          request_id:   requestId
+        })
+      });
+      if (r2.ok) savedCount++;
+    }
+
+    // Save comparison result to request row
+    await sbSave({
+      id: requestId,
+      pricing_comparison: summary,
+      contractor_name: cname,
+      updated_at: new Date().toISOString()
+    });
+
+    res.json({ ok: true, summary, pricesSaved: savedCount });
+
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
