@@ -732,102 +732,60 @@ app.post('/import-prices', upload.array('files', 50), async (req, res) => {
     const files = req.files || [];
     if (!files.length) return res.status(400).json({ error: 'ფაილი ვერ მოიძებნა' });
 
-    const XLSX = require('xlsx');
     const cur = currency || '₾';
     const dt  = date || new Date().toISOString().slice(0, 10);
+    const contrName = contractor || 'საწყისი';
     const results = [];
 
     // ფოლდერის სახელი = მოთხოვნის № = პროექტი
     const reqNum = (project_name || '').trim() || ('import_' + Date.now());
     const requestId = 'req_' + reqNum.replace(/[^a-zA-Z0-9_\-]/g, '_') + '_' + Date.now();
+
+    // 1. ფაილების ატვირთვა Storage-ში — პარალელურად (timeout-ის თავიდან აცილება)
     const filesMeta = [];
-
-    for (const file of files) {
-      // 1. Storage — ისტორიული არქივი
-      const storagePath = `historical/${dt}/${file.originalname}`;
-      await sbStorageUpload(storagePath, file.buffer, contentTypeFor(file.originalname));
-      // 2. Storage — მოთხოვნის სივრცე (რომ მოთხოვნის დეტალებში ჩანდეს)
+    await Promise.all(files.map(async (file) => {
       const reqPath = `${requestId}/${file.originalname}`;
-      const ok = await sbStorageUpload(reqPath, file.buffer, contentTypeFor(file.originalname));
+      const histPath = `historical/${dt}/${file.originalname}`;
+      const [ok] = await Promise.all([
+        sbStorageUpload(reqPath, file.buffer, contentTypeFor(file.originalname)),
+        sbStorageUpload(histPath, file.buffer, contentTypeFor(file.originalname))
+      ]);
       if (ok) filesMeta.push({ name: file.originalname, path: reqPath, size: file.size, type: file.mimetype });
+    }));
 
+    // 2. ფასების ამოღება — მხოლოდ ფასიანი XLS-დან (ახალი დეტექცია: multi-row header)
+    for (const file of files) {
       const isXls = /\.(xls|xlsx)$/i.test(file.originalname);
-
       if (!isXls) {
-        // PDF და სხვა — მხოლოდ Storage-ში
-        results.push({ file: file.originalname, storagePath, itemsSaved: 0, total: 0, type: 'storage-only' });
+        results.push({ file: file.originalname, storagePath: `historical/${dt}/${file.originalname}`, itemsSaved: 0, total: 0, type: 'storage-only' });
         continue;
       }
 
-      // XLS — ფასების ამოღება AI-ით
-      const wb = XLSX.read(file.buffer, { type: 'buffer' });
-      let text = '';
-      wb.SheetNames.forEach(name => {
-        const ws   = wb.Sheets[name];
-        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-        text += `=== ${name} ===\n`;
-        rows.filter(r => r.some(c => c !== '')).slice(0, 200).forEach(row => {
-          text += row.map(c => String(c)).join('\t') + '\n';
-        });
-      });
-
-      const prompt =
-        `ეს XLS ფაილია განფასებით:\n${text.slice(0, 9000)}\n\n` +
-        `ამოიღე მხოლოდ ის პოზიციები, რომლებსაც აქვთ შევსებული ერთეულის ფასი (>0). ` +
-        `გიპასუხე მხოლოდ JSON მასივით, სხვა ტექსტის გარეშე:\n` +
-        `[{"work_name":"სამუშოს სახელი","quantity":0,"unit":"ერთ.","unit_price":0}]\n` +
-        `- unit_price: ერთეულის ფასი რიცხვად (აუცილებლად >0)\n` +
-        `- unit: ერთეული (მ², კგ, ც, გრ.მ. და ა.შ.)\n` +
-        `**მნიშვნელოვანი:** თუ პოზიციას ფასი არ აქვს ან 0-ია — საერთოდ გამოტოვე, JSON-ში არ შეიტანო. ` +
-        `მხოლოდ განფასებული პოზიციები. JSON მასივი — ზუსტად, სხვა არარა.`;
-
-      const raw = await callAI(
-        'შენ ხარ ფინანსური ექსპერტი. XLS-დან ფასების ამოღება. მხოლოდ JSON მასივი.',
-        [{ role: 'user', content: prompt }]
-      );
-
-      let items = [];
-      try {
-        const cleaned = raw.replace(/```json|```/g, '').trim();
-        const match = cleaned.match(/\[[\s\S]*\]/);
-        if (match) items = JSON.parse(match[0]);
-      } catch (e) { console.error('JSON parse:', file.originalname, e.message); }
-
-      let saved = 0;
-      const contrName = contractor || 'საწყისი';
-
-      for (const item of items) {
-        const price = parseFloat(item.unit_price) || 0;
-        if (!item.work_name || price <= 0) continue;  // only priced positions
-        const r = await fetch(`${SUPABASE_URL}/rest/v1/unit_prices`, {
-          method: 'POST',
-          headers: { ...SB_H(), 'Prefer': 'return=minimal' },
-          body: JSON.stringify({
-            id: 'up_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
-            project_name: reqNum,
-            contractor:   contrName,
-            work_name:    String(item.work_name).trim(),
-            quantity:     parseFloat(item.quantity) || 0,
-            unit:         String(item.unit || '').trim(),
-            unit_price:   price,
-            currency:     cur,
-            date:         dt,
-            request_id:   reqNum
-          })
-        });
-        if (r.ok) saved++;
+      // იგივე დეტექცია, რასაც processFile იყენებს
+      const parts = await processFile(file.buffer, file.originalname);
+      if (!parts._xlsHasPrices) {
+        // ფასების გარეშე XLS (სპეციფიკაცია/დაზუსტება) — ფასები არ ამოიღება
+        results.push({ file: file.originalname, storagePath: `historical/${dt}/${file.originalname}`, itemsSaved: 0, total: 0, type: 'no-prices' });
+        continue;
       }
 
-      results.push({ file: file.originalname, storagePath, itemsSaved: saved, total: items.length });
+      const saved = await extractAndSavePrices(file.buffer, file.originalname, {
+        projectName: reqNum,
+        contractor:  contrName,
+        requestNum:  reqNum,
+        currency:    cur,
+        date:        dt
+      });
+      results.push({ file: file.originalname, storagePath: `historical/${dt}/${file.originalname}`, itemsSaved: saved, total: saved });
     }
 
-    // მოთხოვნის შექმნა — "დასრულებული" სტატუსით
+    // 3. მოთხოვნის შექმნა — "დასრულებული" სტატუსით
     if (filesMeta.length > 0) {
       await sbSave({
         id: requestId,
         num: reqNum,
         project: reqNum,
-        initiator: contractor || 'საწყისი',
+        initiator: contrName,
         cat: 'service',
         priority: 'mid',
         status: 'done',
