@@ -127,15 +127,32 @@ async function processFile(buffer, originalname) {
     const XLSX = require('xlsx');
     const wb   = XLSX.read(buffer, { type: 'buffer' });
     let text   = '';
+    let hasPrices = false;
     wb.SheetNames.forEach(name => {
       const ws   = wb.Sheets[name];
       const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+      // Detect price column: header row contains "ფასი"/"price", and data cells under it are numeric
+      const headerRow = rows.find(r => r.some(c => c !== '')) || [];
+      const priceCols = [];
+      headerRow.forEach((h, i) => {
+        if (/ფასი|price|ღირ|ერთ.*ფას|unit.?price|цена/i.test(String(h))) priceCols.push(i);
+      });
+      if (priceCols.length) {
+        const dataRows = rows.slice(rows.indexOf(headerRow) + 1).filter(r => r.some(c => c !== ''));
+        const filledCount = dataRows.filter(r => priceCols.some(ci => {
+          const v = parseFloat(String(r[ci]).replace(/[,\s]/g, ''));
+          return !isNaN(v) && v > 0;
+        })).length;
+        if (filledCount >= Math.max(1, dataRows.length * 0.2)) hasPrices = true;
+      }
       text += `=== ${name} ===\n`;
       rows.filter(r => r.some(c => c !== '')).slice(0, 150).forEach(row => {
         text += row.map(c => String(c)).join('\t') + '\n';
       });
     });
-    parts.push({ type: 'text', text: `=== XLS: ${originalname} ===\n${text.slice(0, 15000)}` });
+    const tag = hasPrices ? '[ფასებით — კონტრაქტორის განფასება]' : '[ფასების გარეშე — ჩვენი ჩამონათვალი]';
+    parts.push({ type: 'text', text: `=== XLS: ${originalname} ${tag} ===\n${text.slice(0, 15000)}` });
+    parts._xlsHasPrices = hasPrices;
 
   } else if (['doc','docx'].includes(ext)) {
     try {
@@ -194,10 +211,12 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
 
     let msgContent = [];
     let filesMeta = [];
+    let hasContractorPricing = false;
 
     if (uploadedFiles.length > 0) {
       for (const file of uploadedFiles) {
         const parts = await processFile(file.buffer, file.originalname);
+        if (parts._xlsHasPrices) hasContractorPricing = true;
         msgContent.push(...parts);
       }
 
@@ -219,6 +238,7 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
         const buf = await sbStorageDownload(fm.path);
         if (buf) {
           const parts = await processFile(buf, fm.name);
+          if (parts._xlsHasPrices) hasContractorPricing = true;
           msgContent.push(...parts);
         }
       }
@@ -294,6 +314,15 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
         'ყურდაღება არ მიაქციო წვრილმან/უმნიშვნელო სხვაობებს (მაგ. დამრგვალება, ერთეულის ჩასწორება, უმნიშვნელო % განსხვავება). თითო პუნქტში მიუთითე **ზუსტი მდებარეობა**: გვერდი/ცხრილი/სტრიქონის №. თუ მნიშვნელოვანი შეუსაბამობა არ ნაპოვნია, დაწერე "მნიშვნელოვანი შეუსაბამობები არ ნაპოვნია".\n\n' +
         '## დასკვნა\n' +
         '2-3 წინადადებით ზოგადი შეფასება და რეკომენდაცია.\n\n' +
+        (hasContractorPricing
+          ? '## 📊 ფასების შედარება\n' +
+            'ფაილებში არის კონტრაქტორის განფასება (მონიშნულია "[ფასებით]") და ჩვენი ჩამონათვალი (მონიშნულია "[ფასების გარეშე]"). ' +
+            'შეადარე ისინი დასახელებებით (case-insensitive, მოქნილი matching):\n' +
+            '- **ფასობრივი:** დამთხვეული პოზიციების ფასები (თუ ჩვენს ჩამონათვალში ფასი არ არის, შეადარე ისტორიულ/საბაზრო ფასს)\n' +
+            '- **გამოტოვებული:** ჩვენთან არის, კონტრაქტორთან არა → რისკი: მერე დამატებით მოითხოვს\n' +
+            '- **ზედმეტი:** კონტრაქტორთან არის, ჩვენთან არა → რისკი: ფასის გაბერვა\n' +
+            'ცხრილით ან მოკლე ჩამონათვალით, მხოლოდ მნიშვნელოვანი სხვაობები.\n\n'
+          : '') +
         'წეს — არანაირი ტექნიკური სიმბოლო ან კოდის ბლოკი, მხოლოდ ზემოთ მითითებული Markdown სათაურები და bold.' +
         (histPricesContext
           ? '\n\n## 💰 დაახლოებითი ღირებულება\n' +
@@ -480,7 +509,18 @@ app.post('/import-prices', upload.array('files', 50), async (req, res) => {
     const results = [];
 
     for (const file of files) {
-      // Parse XLS
+      const storagePath = `historical/${dt}/${file.originalname}`;
+      await sbStorageUpload(storagePath, file.buffer, contentTypeFor(file.originalname));
+
+      const isXls = /\.(xls|xlsx)$/i.test(file.originalname);
+
+      if (!isXls) {
+        // PDF და სხვა — მხოლოდ Storage-ში
+        results.push({ file: file.originalname, storagePath, itemsSaved: 0, total: 0, type: 'storage-only' });
+        continue;
+      }
+
+      // XLS — ფასების ამოღება AI-ით
       const wb = XLSX.read(file.buffer, { type: 'buffer' });
       let text = '';
       wb.SheetNames.forEach(name => {
@@ -492,11 +532,6 @@ app.post('/import-prices', upload.array('files', 50), async (req, res) => {
         });
       });
 
-      // Upload to Storage
-      const storagePath = `historical/${dt}/${file.originalname}`;
-      await sbStorageUpload(storagePath, file.buffer, contentTypeFor(file.originalname));
-
-      // AI extracts price items
       const prompt =
         `ეს XLS ფაილია განფასებით:\n${text.slice(0, 9000)}\n\n` +
         `ამოიღე ყველა პოზიცია. გიპასუხე მხოლოდ JSON მასივით, სხვა ტექსტის გარეშე:\n` +
