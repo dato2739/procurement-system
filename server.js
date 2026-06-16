@@ -141,23 +141,36 @@ async function processFile(buffer, originalname) {
     const wb   = XLSX.read(buffer, { type: 'buffer' });
     let text   = '';
     let hasPrices = false;
+    const priceRe = /ფას|ღირ|price|unit.?price|цена|стоим|ერთეულის/i;
     wb.SheetNames.forEach(name => {
       const ws   = wb.Sheets[name];
       const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-      // Detect price column: header row contains "ფასი"/"price", and data cells under it are numeric
-      const headerRow = rows.find(r => r.some(c => c !== '')) || [];
+
+      // Find the REAL header row: scan first 15 non-empty rows for one whose
+      // cells contain a price keyword. Titles (R0) often lack the price column,
+      // so we must not assume the first non-empty row is the header.
+      let headerIdx = -1;
       const priceCols = [];
-      headerRow.forEach((h, i) => {
-        if (/ფასი|price|ღირ|ერთ.*ფას|unit.?price|цена/i.test(String(h))) priceCols.push(i);
-      });
-      if (priceCols.length) {
-        const dataRows = rows.slice(rows.indexOf(headerRow) + 1).filter(r => r.some(c => c !== ''));
+      const scanLimit = Math.min(rows.length, 15);
+      for (let i = 0; i < scanLimit; i++) {
+        const r = rows[i];
+        if (!r || !r.some(c => c !== '')) continue;
+        const cols = [];
+        r.forEach((h, ci) => { if (priceRe.test(String(h))) cols.push(ci); });
+        if (cols.length) { headerIdx = i; priceCols.push(...cols); break; }
+      }
+
+      if (headerIdx >= 0 && priceCols.length) {
+        // Check numeric fill in the price columns BELOW the header row
+        const dataRows = rows.slice(headerIdx + 1).filter(r => r.some(c => c !== ''));
         const filledCount = dataRows.filter(r => priceCols.some(ci => {
           const v = parseFloat(String(r[ci]).replace(/[,\s]/g, ''));
           return !isNaN(v) && v > 0;
         })).length;
-        if (filledCount >= Math.max(1, dataRows.length * 0.2)) hasPrices = true;
+        // At least 3 priced rows OR 15% filled → it's a priced (განფასება) sheet
+        if (filledCount >= 3 || filledCount >= Math.max(1, dataRows.length * 0.15)) hasPrices = true;
       }
+
       text += `=== ${name} ===\n`;
       rows.filter(r => r.some(c => c !== '')).slice(0, 150).forEach(row => {
         text += row.map(c => String(c)).join('\t') + '\n';
@@ -403,6 +416,10 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
 });
 
 async function callAI(system, messages) {
+  return callAIWithTokens(system, messages, 4096);
+}
+
+async function callAIWithTokens(system, messages, maxTokens) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -410,7 +427,7 @@ async function callAI(system, messages) {
       'x-api-key':         ANTHROPIC_KEY,
       'anthropic-version': '2023-06-01'
     },
-    body: JSON.stringify({ model: MODEL, max_tokens: 4096, system, messages })
+    body: JSON.stringify({ model: MODEL, max_tokens: maxTokens || 4096, system, messages })
   });
   const d = await r.json();
   if (d.error) throw new Error(d.error.message);
@@ -435,16 +452,24 @@ async function extractAndSavePrices(buffer, fileName, { projectName, contractor,
   } catch (e) { console.error('xls read:', e.message); return 0; }
 
   const prompt =
-    `ეს XLS ფაილია განფასებით:\n${text.slice(0, 9000)}\n\n` +
-    `ამოიღე მხოლოდ ის პოზიციები, რომლებსაც აქვთ შევსებული ერთეულის ფასი (>0). ` +
+    `ეს არის სამშენებლო/ელ-ტექნიკური სამუშაოების განფასების XLS ფაილი:\n${text.slice(0, 16000)}\n\n` +
+    `**ყურადღება:** ცხრილის სათაური (header) შესაძლოა არ იყოს პირველ რიგში — ხშირად პირველი 1-3 რიგი არის ` +
+    `ობიექტის დასახელება/სათაური. რეალური სვეტების სათაურები (NN, დასახელება, განზომილება, რაოდენობა, ` +
+    `ერთეულის ღირებულება/ფასი, სულ) უფრო ქვემოთ მოდის. იპოვე ფასების სვეტი ("ერთეულის ღირებულება", ` +
+    `"unit price", "ფასი") და ამოიღე ფასიანი პოზიციები.\n\n` +
+    `ამოიღე მხოლოდ ის პოზიციები, რომლებსაც აქვთ შევსებული **ერთეულის** ფასი (>0). ` +
+    `(გაითვალისწინე: "ერთეულის ღირებულება" = unit price, "სულ/Total" = ჯამური — გვინდა ერთეულის ფასი, არა ჯამი).\n` +
     `გიპასუხე მხოლოდ JSON მასივით, სხვა ტექსტის გარეშე:\n` +
     `[{"work_name":"სამუშოს სახელი","quantity":0,"unit":"ერთ.","unit_price":0}]\n` +
+    `- work_name: სამუშაოს დასახელება (ქართულად)\n` +
     `- unit_price: ერთეულის ფასი რიცხვად (აუცილებლად >0)\n` +
-    `- unit: ერთეული (მ², კგ, ც, გრ.მ. და ა.შ.)\n` +
-    `**მნიშვნელოვანი:** თუ პოზიციას ფასი არ აქვს ან 0-ია — საერთოდ გამოტოვე. მხოლოდ განფასებული პოზიციები. JSON მასივი — ზუსტად, სხვა არარა.`;
+    `- quantity: რაოდენობა რიცხვად\n` +
+    `- unit: ერთეული (მ³, მ², კგ, ც, გრძ.მ. და ა.შ.)\n` +
+    `**მნიშვნელოვანი:** გამოტოვე სათაურები, ქვესექციების სახელები (მაგ. "სამშენებლო სამუშაოები"), ` +
+    `და ის რიგები სადაც ფასი ცარიელია ან 0-ია. მხოლოდ რეალური განფასებული პოზიციები. JSON მასივი — ზუსტად, სხვა არაფერი.`;
 
-  const raw = await callAI('შენ ხარ ფინანსური ექსპერტი. XLS-დან ფასების ამოღება. მხოლოდ JSON მასივი.',
-    [{ role: 'user', content: prompt }]);
+  const raw = await callAIWithTokens('შენ ხარ ფინანსური ექსპერტი. XLS-დან ფასების ამოღება. მხოლოდ JSON მასივი.',
+    [{ role: 'user', content: prompt }], 8192);
 
   let items = [];
   try {
