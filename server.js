@@ -248,11 +248,15 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
     let msgContent = [];
     let filesMeta = [];
     let hasContractorPricing = false;
+    let pricedXlsFiles = []; // {name, buffer} — XLS files that contain prices
 
     if (uploadedFiles.length > 0) {
       for (const file of uploadedFiles) {
         const parts = await processFile(file.buffer, file.originalname);
-        if (parts._xlsHasPrices) hasContractorPricing = true;
+        if (parts._xlsHasPrices) {
+          hasContractorPricing = true;
+          pricedXlsFiles.push({ name: file.originalname, buffer: file.buffer });
+        }
         msgContent.push(...parts);
       }
 
@@ -274,7 +278,10 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
         const buf = await sbStorageDownload(fm.path);
         if (buf) {
           const parts = await processFile(buf, fm.name);
-          if (parts._xlsHasPrices) hasContractorPricing = true;
+          if (parts._xlsHasPrices) {
+            hasContractorPricing = true;
+            pricedXlsFiles.push({ name: fm.name, buffer: buf });
+          }
           msgContent.push(...parts);
         }
       }
@@ -384,7 +391,9 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
         });
       }
 
-      return res.json({ type: 'analysis', summary, files: filesMeta });
+      // Tell frontend whether a priced XLS exists (so it can show "add prices" button)
+      // but DON'T add prices automatically — user controls that via separate action.
+      return res.json({ type: 'analysis', summary, files: filesMeta, hasPricedXls: pricedXlsFiles.length > 0 });
     }
 
   } catch(e) {
@@ -407,6 +416,126 @@ async function callAI(system, messages) {
   if (d.error) throw new Error(d.error.message);
   return (d.content || []).map(c => c.text || '').join('');
 }
+
+// Extract prices from a priced XLS buffer and save to unit_prices.
+// Returns number of saved positions.
+async function extractAndSavePrices(buffer, fileName, { projectName, contractor, requestNum, currency, date }) {
+  const XLSX = require('xlsx');
+  let text = '';
+  try {
+    const wb = XLSX.read(buffer, { type: 'buffer' });
+    wb.SheetNames.forEach(name => {
+      const ws = wb.Sheets[name];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+      text += `=== ${name} ===\n`;
+      rows.filter(r => r.some(c => c !== '')).slice(0, 200).forEach(row => {
+        text += row.map(c => String(c)).join('\t') + '\n';
+      });
+    });
+  } catch (e) { console.error('xls read:', e.message); return 0; }
+
+  const prompt =
+    `ეს XLS ფაილია განფასებით:\n${text.slice(0, 9000)}\n\n` +
+    `ამოიღე მხოლოდ ის პოზიციები, რომლებსაც აქვთ შევსებული ერთეულის ფასი (>0). ` +
+    `გიპასუხე მხოლოდ JSON მასივით, სხვა ტექსტის გარეშე:\n` +
+    `[{"work_name":"სამუშოს სახელი","quantity":0,"unit":"ერთ.","unit_price":0}]\n` +
+    `- unit_price: ერთეულის ფასი რიცხვად (აუცილებლად >0)\n` +
+    `- unit: ერთეული (მ², კგ, ც, გრ.მ. და ა.შ.)\n` +
+    `**მნიშვნელოვანი:** თუ პოზიციას ფასი არ აქვს ან 0-ია — საერთოდ გამოტოვე. მხოლოდ განფასებული პოზიციები. JSON მასივი — ზუსტად, სხვა არარა.`;
+
+  const raw = await callAI('შენ ხარ ფინანსური ექსპერტი. XLS-დან ფასების ამოღება. მხოლოდ JSON მასივი.',
+    [{ role: 'user', content: prompt }]);
+
+  let items = [];
+  try {
+    const cleaned = raw.replace(/```json|```/g, '').trim();
+    const match = cleaned.match(/\[[\s\S]*\]/);
+    if (match) items = JSON.parse(match[0]);
+  } catch (e) { console.error('price JSON parse:', fileName, e.message); }
+
+  let saved = 0;
+  const cur = currency || '₾';
+  const dt = date || new Date().toISOString().slice(0, 10);
+  for (const item of items) {
+    const price = parseFloat(item.unit_price) || 0;
+    if (!item.work_name || price <= 0) continue;
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/unit_prices`, {
+      method: 'POST',
+      headers: { ...SB_H(), 'Prefer': 'return=minimal' },
+      body: JSON.stringify({
+        id: 'up_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+        project_name: projectName || '',
+        contractor:   contractor || 'კონტრაქტორი',
+        work_name:    String(item.work_name).trim(),
+        quantity:     parseFloat(item.quantity) || 0,
+        unit:         String(item.unit || '').trim(),
+        unit_price:   price,
+        currency:     cur,
+        date:         dt,
+        request_id:   requestNum || ''
+      })
+    });
+    if (r.ok) saved++;
+  }
+  return saved;
+}
+
+// ── POST /save-request-prices — მოთხოვნის ფასიანი XLS → unit_prices ──
+// დუბლის დაცვით: ჯერ ამოწმებს უკვე არსებობს თუ არა ამ მოთხოვნის ფასები
+app.post('/save-request-prices', async (req, res) => {
+  try {
+    const { requestId } = req.body;
+    if (!requestId) return res.status(400).json({ error: 'requestId სავალდებულოა' });
+
+    const row = await sbGetRequest(requestId);
+    if (!row) return res.status(404).json({ error: 'მოთხოვნა ვერ მოიძებნა' });
+
+    const reqNum = row.num || requestId;
+
+    // Duplicate check — already have prices for this request?
+    const existCheck = await fetch(
+      `${SUPABASE_URL}/rest/v1/unit_prices?request_id=eq.${encodeURIComponent(reqNum)}&select=id&limit=1`,
+      { headers: SB_H() }
+    );
+    const existing = await existCheck.json();
+    if (Array.isArray(existing) && existing.length > 0) {
+      return res.json({ ok: true, alreadyExists: true, pricesSaved: 0,
+        message: 'ამ მოთხოვნის ფასები უკვე ბაზაშია' });
+    }
+
+    // Find priced XLS files in the request
+    const xlsFiles = (row.files || []).filter(f => /\.(xls|xlsx)$/i.test(f.name));
+    if (!xlsFiles.length) return res.json({ ok: true, pricesSaved: 0, message: 'XLS ფაილი არ მოიძებნა' });
+
+    let totalSaved = 0;
+    let pricedFound = false;
+    for (const fm of xlsFiles) {
+      const buf = await sbStorageDownload(fm.path);
+      if (!buf) continue;
+      // Re-check this XLS has prices
+      const parts = await processFile(buf, fm.name);
+      if (!parts._xlsHasPrices) continue;  // skip non-priced (ჩვენი ჩამონათვალი/დაზუსტება)
+      pricedFound = true;
+      totalSaved += await extractAndSavePrices(buf, fm.name, {
+        projectName: row.project || reqNum,
+        contractor: row.contractor_name || 'კონტრაქტორი',
+        requestNum: reqNum,
+        currency: '₾',
+        date: row.date || new Date().toISOString().slice(0, 10)
+      });
+    }
+
+    if (!pricedFound) {
+      return res.json({ ok: true, pricesSaved: 0, noPricedXls: true,
+        message: 'ფასიანი XLS (განფასება) ვერ მოიძებნა' });
+    }
+
+    res.json({ ok: true, pricesSaved: totalSaved });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ── POST /compare-pricing — ეტაპი B ─────────────────────────────
 app.post('/compare-pricing', upload.single('contractor_file'), async (req, res) => {
