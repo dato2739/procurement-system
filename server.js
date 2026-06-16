@@ -399,21 +399,32 @@ app.post('/compare-pricing', upload.single('contractor_file'), async (req, res) 
       `## გამოტოვებული პოზიციები (ჩვენთან → კონტრაქტორთან არა)\n- ...\n\n` +
       `## ზედმეტი პოზიციები (კონტრაქტორთან → ჩვენთან არა)\n- ...\n\n` +
       `## დასკვნა\n2-3 წინადადება: ჯამური სხვაობა, მთავარი რისკები.\n\n` +
+      `ბოლოს, მხოლოდ ერთი JSON მასივი (სხვა ტექსტის გარეშე), ზუსტად ამ ფორმატით:\n` +
       `---JSON_PRICES---\n` +
-      `[{"work_name":"...","quantity":0,"unit":"...","unit_price":0}]\n` +
+      `[{"work_name":"სამუშაოს სახელი","quantity":10,"unit":"მ²","unit_price":50.0}]\n` +
       `---JSON_END---\n` +
-      `(JSON — მხოლოდ კონტ. პოზიციები, რომლებიც ჩვენს ჩამონათვალშიც გვხვდება. unit_price — ლარი/ერთ.)`;
+      `(მხოლოდ კონტ. პოზიციები, რომლებიც ჩვენს ჩამონათვალშიც გვხვდება. გამოტოვებული პოზიციები JSON-ში არ შეიტანო.)`;
 
     const raw = await callAI(
       'შენ ხარ ტექნიკური და ფინანსური ექსპერტი. XLS შედარება — ზუსტი, კონკრეტული, ქართულად.',
       [{ role: 'user', content: prompt }]
     );
 
-    // Extract JSON prices
+    // Extract JSON prices — handles both ---JSON_PRICES--- delimiters and ```json blocks
     let priceItems = [];
-    const jm = raw.match(/---JSON_PRICES---\n?([\s\S]*?)\n?---JSON_END---/);
-    if (jm) { try { priceItems = JSON.parse(jm[1].trim()); } catch (e) { console.error('price JSON parse:', e.message); } }
-    const summary = raw.replace(/---JSON_PRICES---[\s\S]*?---JSON_END---/g, '').trim();
+    // Try delimiter format first
+    const jm1 = raw.match(/---JSON_PRICES---\n?([\s\S]*?)\n?---JSON_END---/);
+    // Fallback: any ```json [...] ``` block that contains an array
+    const jm2 = !jm1 && raw.match(/```json\n?(\[[\s\S]*?\])\n?```/);
+    const jsonStr = jm1 ? jm1[1].trim() : (jm2 ? jm2[1].trim() : null);
+    if (jsonStr) { try { priceItems = JSON.parse(jsonStr); } catch (e) { console.error('price JSON parse:', e.message); } }
+
+    // Strip ALL json/code blocks from displayed summary
+    const summary = raw
+      .replace(/---JSON_PRICES---[\s\S]*?---JSON_END---/g, '')
+      .replace(/```json[\s\S]*?```/g, '')
+      .replace(/```[\s\S]*?```/g, '')
+      .trim();
 
     // Save prices to unit_prices (Stage C data)
     const cur = currency || '₾';
