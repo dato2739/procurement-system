@@ -496,6 +496,29 @@ app.post('/compare-pricing', upload.single('contractor_file'), async (req, res) 
   }
 });
 
+// ── POST /upload-files — ფაილების Storage-ში ატვირთვა (ანალიზის გარეშე) ──
+app.post('/upload-files', upload.array('files', 50), async (req, res) => {
+  try {
+    const { requestId, project, num } = req.body;
+    const files = req.files || [];
+    if (!requestId || !files.length) return res.status(400).json({ error: 'requestId და ფაილები სავალდებულოა' });
+
+    const filesMeta = [];
+    for (const file of files) {
+      const path = `${requestId}/${file.originalname}`;
+      const ok = await sbStorageUpload(path, file.buffer, contentTypeFor(file.originalname));
+      if (ok) filesMeta.push({ name: file.originalname, path, size: file.size, type: file.mimetype });
+    }
+    if (filesMeta.length > 0) {
+      await sbSave({ id: requestId, num: num || requestId, project: project || '', files: filesMeta, updated_at: new Date().toISOString() });
+    }
+    res.json({ ok: true, files: filesMeta });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── POST /import-prices — საწყისი ფასების ბაზის შევსება ─────────
 app.post('/import-prices', upload.array('files', 50), async (req, res) => {
   try {
