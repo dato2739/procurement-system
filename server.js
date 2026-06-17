@@ -335,12 +335,21 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
       let histPricesContext = '';
       if (SUPABASE_URL && SUPABASE_KEY) {
         try {
-          const hpr = await fetch(
-            `${SUPABASE_URL}/rest/v1/unit_prices?select=work_name,unit,unit_price,currency&limit=500`,
-            { headers: SB_H() }
-          );
-          const hitems = await hpr.json();
-          if (Array.isArray(hitems) && hitems.length > 0) {
+          // Pull all prices (paginated past Supabase's 1000-row cap)
+          let hitems = [];
+          let hfrom = 0;
+          for (let i = 0; i < 20; i++) {
+            const hpr = await fetch(
+              `${SUPABASE_URL}/rest/v1/unit_prices?select=work_name,unit,unit_price,currency&order=created_at.desc`,
+              { headers: { ...SB_H(), 'Range-Unit': 'items', 'Range': `${hfrom}-${hfrom + 999}` } }
+            );
+            const batch = await hpr.json();
+            if (!Array.isArray(batch) || batch.length === 0) break;
+            hitems = hitems.concat(batch);
+            if (batch.length < 1000) break;
+            hfrom += 1000;
+          }
+          if (hitems.length > 0) {
             const hmap = {};
             for (const it of hitems) {
               const key = (it.work_name || '').toLowerCase().trim();
@@ -352,7 +361,7 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
               const avg = (g.prices.reduce((s, p) => s + p, 0) / g.prices.length).toFixed(2);
               return `${g.work_name} | ${avg} ${g.currency}/${g.unit}`;
             });
-            if (hlines.length) histPricesContext = hlines.slice(0, 80).join('\n');
+            if (hlines.length) histPricesContext = hlines.slice(0, 120).join('\n');
           }
         } catch (e) { console.error('unit_prices fetch:', e.message); }
       }
@@ -690,12 +699,24 @@ app.post('/compare-pricing', upload.single('contractor_file'), async (req, res) 
 app.get('/prices', async (req, res) => {
   try {
     if (!SUPABASE_URL || !SUPABASE_KEY) return res.json({ items: [] });
-    const r = await fetch(
-      `${SUPABASE_URL}/rest/v1/unit_prices?select=*&order=created_at.desc&limit=2000`,
-      { headers: SB_H() }
-    );
-    const items = await r.json();
-    res.json({ items: Array.isArray(items) ? items : [] });
+
+    // Supabase caps each request at 1000 rows. Paginate with Range headers
+    // to pull the full price database.
+    const pageSize = 1000;
+    let from = 0;
+    let all = [];
+    for (let i = 0; i < 50; i++) {  // safety cap: 50k rows
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/unit_prices?select=*&order=created_at.desc`,
+        { headers: { ...SB_H(), 'Range-Unit': 'items', 'Range': `${from}-${from + pageSize - 1}` } }
+      );
+      const batch = await r.json();
+      if (!Array.isArray(batch) || batch.length === 0) break;
+      all = all.concat(batch);
+      if (batch.length < pageSize) break;  // last page
+      from += pageSize;
+    }
+    res.json({ items: all });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
