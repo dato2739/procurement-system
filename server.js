@@ -730,16 +730,31 @@ app.post('/upload-files', upload.array('files', 50), async (req, res) => {
     const files = req.files || [];
     if (!requestId || !files.length) return res.status(400).json({ error: 'requestId და ფაილები სავალდებულოა' });
 
-    const filesMeta = [];
+    const newMeta = [];
     for (const file of files) {
       const path = `${requestId}/${file.originalname}`;
       const ok = await sbStorageUpload(path, file.buffer, contentTypeFor(file.originalname));
-      if (ok) filesMeta.push({ name: file.originalname, path, size: file.size, type: file.mimetype });
+      if (ok) newMeta.push({ name: file.originalname, path, size: file.size, type: file.mimetype });
     }
-    if (filesMeta.length > 0) {
-      await sbSave({ id: requestId, num: num || requestId, project: project || '', files: filesMeta, updated_at: new Date().toISOString() });
+
+    if (newMeta.length > 0) {
+      // Merge with existing files (append, don't overwrite). Dedupe by name.
+      const row = await sbGetRequest(requestId);
+      const existing = (row && row.files) || [];
+      const byName = {};
+      for (const f of existing) byName[f.name] = f;
+      for (const f of newMeta) byName[f.name] = f;  // new replaces same-name
+      const merged = Object.values(byName);
+      await sbSave({
+        id: requestId,
+        num: (row && row.num) || num || requestId,
+        project: (row && row.project) || project || '',
+        files: merged,
+        updated_at: new Date().toISOString()
+      });
+      return res.json({ ok: true, files: merged, added: newMeta.length });
     }
-    res.json({ ok: true, files: filesMeta });
+    res.json({ ok: true, files: [], added: 0 });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
