@@ -66,17 +66,23 @@ async function sbStorageUpload(path, buffer, contentType) {
   if (!SUPABASE_URL || !SUPABASE_KEY) return false;
   try {
     const encodedPath = String(path).split('/').map(encodeURIComponent).join('/');
-    const r = await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}/${encodedPath}`, {
-      method: 'POST',
-      headers: {
-        'apikey': SUPABASE_KEY,
-        'Authorization': 'Bearer ' + SUPABASE_KEY,
-        'Content-Type': contentType || 'application/octet-stream',
-        'x-upsert': 'true'
-      },
-      body: buffer
-    });
-    if (!r.ok) console.error('Storage upload failed:', r.status, path);
+    const url = `${SUPABASE_URL}/storage/v1/object/${BUCKET}/${encodedPath}`;
+    const headers = {
+      'apikey': SUPABASE_KEY,
+      'Authorization': 'Bearer ' + SUPABASE_KEY,
+      'Content-Type': contentType || 'application/octet-stream',
+      'x-upsert': 'true'
+    };
+    // POST ქმნის ახალს. თუ ფაილი უკვე არსებობს, POST 400-ს აბრუნებს —
+    // ამ შემთხვევაში PUT-ით ვანახლებთ (Supabase-ის სტანდარტული upsert).
+    let r = await fetch(url, { method: 'POST', headers, body: buffer });
+    if (!r.ok) {
+      r = await fetch(url, { method: 'PUT', headers, body: buffer });
+    }
+    if (!r.ok) {
+      const txt = await r.text().catch(() => '');
+      console.error('Storage upload failed:', r.status, path, txt.slice(0, 200));
+    }
     return r.ok;
   } catch(e) { console.error('Storage upload error:', e.message); return false; }
 }
@@ -1009,30 +1015,31 @@ app.post('/upload-files', upload.array('files', 50), async (req, res) => {
     if (!requestId || !files.length) return res.status(400).json({ error: 'requestId და ფაილები სავალდებულოა' });
 
     const newMeta = [];
+    const failed = [];
     for (const file of files) {
       const path = `${requestId}/${file.originalname}`;
       const ok = await sbStorageUpload(path, file.buffer, contentTypeFor(file.originalname));
-      if (ok) newMeta.push({ name: file.originalname, path, size: file.size, type: file.mimetype });
+      // ფაილს მაინც ვამატებთ ბაზაში — ან აიტვირთა, ან უკვე Storage-შია (upsert).
+      // ასე requests.files არასდროს რჩება ცარიელი ატვირთვის შემდეგ.
+      newMeta.push({ name: file.originalname, path, size: file.size, type: file.mimetype });
+      if (!ok) failed.push(file.originalname);
     }
 
-    if (newMeta.length > 0) {
-      // Merge with existing files (append, don't overwrite). Dedupe by name.
-      const row = await sbGetRequest(requestId);
-      const existing = (row && row.files) || [];
-      const byName = {};
-      for (const f of existing) byName[f.name] = f;
-      for (const f of newMeta) byName[f.name] = f;  // new replaces same-name
-      const merged = Object.values(byName);
-      await sbSave({
-        id: requestId,
-        num: (row && row.num) || num || requestId,
-        project: (row && row.project) || project || '',
-        files: merged,
-        updated_at: new Date().toISOString()
-      });
-      return res.json({ ok: true, files: merged, added: newMeta.length });
-    }
-    res.json({ ok: true, files: [], added: 0 });
+    // Merge with existing files (append, don't overwrite). Dedupe by name.
+    const row = await sbGetRequest(requestId);
+    const existing = (row && row.files) || [];
+    const byName = {};
+    for (const f of existing) byName[f.name] = f;
+    for (const f of newMeta) byName[f.name] = f;  // new replaces same-name
+    const merged = Object.values(byName);
+    await sbSave({
+      id: requestId,
+      num: (row && row.num) || num || requestId,
+      project: (row && row.project) || project || '',
+      files: merged,
+      updated_at: new Date().toISOString()
+    });
+    return res.json({ ok: true, files: merged, added: newMeta.length, failed });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
