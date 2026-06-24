@@ -4,7 +4,22 @@ const cors    = require('cors');
 const fetch   = (...a) => import('node-fetch').then(({default: f}) => f(...a));
 
 const app    = express();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+const uploadRaw = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+
+// multer ფაილის სახელს latin1-ად კითხულობს — ქართული UTF-8 უნდა გავასწოროთ.
+// wrapper, რომელიც multer-ის შემდეგ ყველა file.originalname-ს UTF-8-ად გადააკოდირებს.
+function fixNames(req, res, next) {
+  const fix = f => { if (f && f.originalname) {
+    try { f.originalname = Buffer.from(f.originalname, 'latin1').toString('utf8'); } catch(e){}
+  }};
+  if (req.file) fix(req.file);
+  if (Array.isArray(req.files)) req.files.forEach(fix);
+  next();
+}
+const upload = {
+  array: (field, max) => [uploadRaw.array(field, max), fixNames],
+  single: (field) => [uploadRaw.single(field), fixNames]
+};
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
