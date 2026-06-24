@@ -50,7 +50,8 @@ async function sbGetRequest(id) {
 async function sbStorageUpload(path, buffer, contentType) {
   if (!SUPABASE_URL || !SUPABASE_KEY) return false;
   try {
-    const r = await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}/${path}`, {
+    const encodedPath = String(path).split('/').map(encodeURIComponent).join('/');
+    const r = await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}/${encodedPath}`, {
       method: 'POST',
       headers: {
         'apikey': SUPABASE_KEY,
@@ -60,6 +61,7 @@ async function sbStorageUpload(path, buffer, contentType) {
       },
       body: buffer
     });
+    if (!r.ok) console.error('Storage upload failed:', r.status, path);
     return r.ok;
   } catch(e) { console.error('Storage upload error:', e.message); return false; }
 }
@@ -67,10 +69,12 @@ async function sbStorageUpload(path, buffer, contentType) {
 async function sbStorageDownload(path) {
   if (!SUPABASE_URL || !SUPABASE_KEY) return null;
   try {
-    const r = await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}/${path}`, {
+    // path-ის თითო სეგმენტი ცალკე უნდა დაიშიფროს (ქართული ასოები, spaces, სპეცსიმბ.)
+    const encodedPath = String(path).split('/').map(encodeURIComponent).join('/');
+    const r = await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}/${encodedPath}`, {
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
     });
-    if (!r.ok) return null;
+    if (!r.ok) { console.error('Storage download failed:', r.status, path); return null; }
     const ab = await r.arrayBuffer();
     return Buffer.from(ab);
   } catch(e) { console.error('Storage download error:', e.message); return null; }
