@@ -970,6 +970,37 @@ app.get('/prices', async (req, res) => {
   }
 });
 
+// ── POST /delete-file — ერთი ფაილის წაშლა (Storage + requests.files) ──
+app.post('/delete-file', async (req, res) => {
+  try {
+    const { requestId, fileName } = req.body;
+    if (!requestId || !fileName) return res.status(400).json({ error: 'requestId და fileName სავალდებულოა' });
+
+    const row = await sbGetRequest(requestId);
+    if (!row) return res.status(404).json({ error: 'მოთხოვნა ვერ მოიძებნა' });
+
+    const files = (row.files || []);
+    const target = files.find(f => f.name === fileName);
+    const storagePath = (target && target.path) || `${requestId}/${fileName}`;
+
+    // Storage-დან წაშლა
+    const encodedPath = String(storagePath).split('/').map(encodeURIComponent).join('/');
+    await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}/${encodedPath}`, {
+      method: 'DELETE',
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': 'Bearer ' + SUPABASE_KEY }
+    });
+
+    // requests.files-დან ამოღება
+    const remaining = files.filter(f => f.name !== fileName);
+    await sbSave({ id: requestId, num: row.num || requestId, files: remaining, updated_at: new Date().toISOString() });
+
+    res.json({ ok: true, files: remaining });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── POST /upload-files — ფაილების Storage-ში ატვირთვა (ანალიზის გარეშე) ──
 app.post('/upload-files', upload.array('files', 50), async (req, res) => {
   try {
