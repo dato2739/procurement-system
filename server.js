@@ -77,14 +77,24 @@ async function sbStorageUpload(path, buffer, contentType) {
     // ამ შემთხვევაში PUT-ით ვანახლებთ (Supabase-ის სტანდარტული upsert).
     let r = await fetch(url, { method: 'POST', headers, body: buffer });
     if (!r.ok) {
-      r = await fetch(url, { method: 'PUT', headers, body: buffer });
+      const postTxt = await r.text().catch(() => '');
+      const putR = await fetch(url, { method: 'PUT', headers, body: buffer });
+      if (!putR.ok) {
+        const putTxt = await putR.text().catch(() => '');
+        console.error('Storage upload failed (POST+PUT):', r.status, putR.status, path);
+        console.error('  POST resp:', postTxt.slice(0, 300));
+        console.error('  PUT resp:', putTxt.slice(0, 300));
+        sbStorageUpload._lastError = `POST ${r.status}: ${postTxt.slice(0,150)} | PUT ${putR.status}: ${putTxt.slice(0,150)}`;
+        return false;
+      }
     }
-    if (!r.ok) {
-      const txt = await r.text().catch(() => '');
-      console.error('Storage upload failed:', r.status, path, txt.slice(0, 200));
-    }
-    return r.ok;
-  } catch(e) { console.error('Storage upload error:', e.message); return false; }
+    sbStorageUpload._lastError = null;
+    return true;
+  } catch(e) {
+    console.error('Storage upload error:', e.message);
+    sbStorageUpload._lastError = 'exception: ' + e.message;
+    return false;
+  }
 }
 
 async function sbStorageDownload(path) {
@@ -1022,7 +1032,7 @@ app.post('/upload-files', upload.array('files', 50), async (req, res) => {
       // ფაილს მაინც ვამატებთ ბაზაში — ან აიტვირთა, ან უკვე Storage-შია (upsert).
       // ასე requests.files არასდროს რჩება ცარიელი ატვირთვის შემდეგ.
       newMeta.push({ name: file.originalname, path, size: file.size, type: file.mimetype });
-      if (!ok) failed.push(file.originalname);
+      if (!ok) failed.push({ name: file.originalname, error: sbStorageUpload._lastError || 'unknown' });
     }
 
     // Merge with existing files (append, don't overwrite). Dedupe by name.
