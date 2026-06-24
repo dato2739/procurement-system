@@ -324,7 +324,7 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
   <div class="sidebar-logo">
     <div class="mark">სს ენერგო-პრო</div>
     <h2>შესყიდვების სისტემა</h2>
-    <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--text3);margin-top:5px;letter-spacing:1px;">V28</div>
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--text3);margin-top:5px;letter-spacing:1px;">V44</div>
   </div>
   <div class="sidebar-nav">
     <div class="nav-section">მოდული 1</div>
@@ -337,7 +337,7 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
       <span class="icon">🏷️</span> ფასთაგამოკითხვა
     </a>
     <div class="nav-section">მოდული 3</div>
-    <a class="nav-item" style="opacity:0.4;cursor:not-allowed">
+    <a class="nav-item" id="nav-prices" onclick="showView('prices')">
       <span class="icon">📊</span> ფასების ბაზა
     </a>
     <a class="nav-item" id="nav-import" onclick="showView('import')">
@@ -405,9 +405,13 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
         </select>
         <select class="filter-select" id="filterCat" onchange="renderTable()">
           <option value="">ყველა კატეგორია</option>
-          <option value="material">მასალა</option>
-          <option value="service">მომსახურება</option>
-          <option value="equipment">აღჭურვილობა</option>
+          <option value="construction">სამშენებლო</option>
+          <option value="gktp">გკტპ</option>
+          <option value="cells">უჯრედები</option>
+          <option value="mv_lines">მ/ძ ხაზები</option>
+          <option value="scada">SCADA</option>
+          <option value="retrofit">რეტროფიტი</option>
+          <option value="relay">სარელეო</option>
         </select>
       </div>
 
@@ -418,7 +422,6 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
             <tr>
               <th>№</th>
               <th>პროექტი / დასახელება</th>
-              <th>ინიციატორი</th>
               <th>კატეგ.</th>
               <th>პრიორ.</th>
               <th>სტატუსი</th>
@@ -482,6 +485,15 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
         <div class="ai-empty">ფაილები ატვირთე და AI გაანალიზებს.<br>
           <button class="btn btn-secondary btn-sm" style="margin-top:10px" onclick="checkAndStartAnalysis()">▶ ფაილების ანალიზი</button>
         </div>
+      </div>
+
+      <!-- PRICES TO DATABASE — ჩანს თუ ფასიანი XLS არის -->
+      <div id="addPricesSection" style="display:none;margin-top:12px;background:var(--surface2);border:1px solid var(--border2);border-radius:10px;padding:14px 16px">
+        <div style="font-size:12px;color:var(--text2);margin-bottom:10px">
+          💰 ამ მოთხოვნაში ნაპოვნია განფასების ფაილი (ფასებით). გინდა ფასები ფასების ბაზაში დაამატო?
+        </div>
+        <div id="addPricesStatus" style="font-size:12px;margin-bottom:10px"></div>
+        <button class="btn btn-primary btn-sm" id="btnAddPrices" onclick="addRequestPricesToDb()">💰 ფასები ბაზაში დამატება</button>
       </div>
 
       <!-- CHAT SECTION -->
@@ -550,7 +562,12 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 
       <!-- FILE SECTION -->
       <div id="detailFileSection" style="margin-top:20px;display:none">
-        <div class="section-title" style="margin-top:0">📎 ატვირთული ფაილები</div>
+        <div class="section-title" style="margin-top:0;display:flex;align-items:center;justify-content:space-between">
+          <span>📎 ატვირთული ფაილები</span>
+          <button class="btn btn-secondary btn-sm" onclick="document.getElementById('addFilesInput').click()">➕ ფაილების დამატება</button>
+        </div>
+        <input type="file" id="addFilesInput" multiple style="display:none" onchange="handleAddFiles(this)">
+        <div id="addFilesStatus" style="font-size:12px;margin-bottom:8px"></div>
         <div id="detailFilesList"></div>
       </div>
 
@@ -562,61 +579,132 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 
     </div>
 
+    <!-- ===== VIEW 4: PRICES DATABASE ===== -->
+    <div id="view-prices" style="display:none">
+      <!-- Stats -->
+      <div class="stats-row" style="margin-bottom:16px">
+        <div class="stat-card s1">
+          <div class="stat-label">სულ ჩანაწერი</div>
+          <div class="stat-value" id="priceStatTotal">0</div>
+          <div class="stat-sub">ფასების ბაზა</div>
+        </div>
+        <div class="stat-card s2">
+          <div class="stat-label">პროექტი</div>
+          <div class="stat-value" id="priceStatProjects">0</div>
+          <div class="stat-sub">უნიკალური</div>
+        </div>
+        <div class="stat-card s3">
+          <div class="stat-label">კონტრაქტორი</div>
+          <div class="stat-value" id="priceStatContractors">0</div>
+          <div class="stat-sub">უნიკალური</div>
+        </div>
+        <div class="stat-card s4">
+          <div class="stat-label">სამუშაო</div>
+          <div class="stat-value" id="priceStatWorks">0</div>
+          <div class="stat-sub">უნიკალური დასახ.</div>
+        </div>
+      </div>
+
+      <!-- Filters -->
+      <div class="toolbar">
+        <div class="search-wrap">
+          <span class="search-icon">🔍</span>
+          <input type="text" id="priceSearch" placeholder="ძებნა: სამუშაო, პროექტი, მოთხ. №..." oninput="renderPrices()">
+        </div>
+        <select class="filter-select" id="priceFilterProject" onchange="renderPrices()">
+          <option value="">ყველა პროექტი</option>
+        </select>
+        <select class="filter-select" id="priceFilterContractor" onchange="renderPrices()">
+          <option value="">ყველა კონტრაქტორი</option>
+        </select>
+        <select class="filter-select" id="priceSort" onchange="renderPrices()">
+          <option value="date">თარიღით (ახალი)</option>
+          <option value="name">დასახელებით</option>
+          <option value="price_asc">ფასი ↑</option>
+          <option value="price_desc">ფასი ↓</option>
+        </select>
+        <button class="btn btn-primary btn-sm" onclick="loadPrices()">📥 ჩატვირთვა</button>
+        <button class="btn btn-secondary btn-sm" onclick="exportPricesCsv()">📄 CSV</button>
+      </div>
+
+      <!-- Table -->
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>სამუშაო</th>
+              <th>რაოდ.</th>
+              <th>ერთ.</th>
+              <th>ფასი</th>
+              <th>პროექტი</th>
+              <th>კონტრაქტორი</th>
+              <th>თარიღი</th>
+            </tr>
+          </thead>
+          <tbody id="priceTableBody"></tbody>
+        </table>
+        <div id="priceTableEmpty" class="empty-state" style="display:none">
+          <div class="big">💰</div>
+          <p>ფასები ვერ მოიძებნა</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== VIEW 3: IMPORT ===== -->
+    <div id="view-import" style="display:none">
+      <div style="max-width:600px">
+        <div class="section-title" style="margin-bottom:20px">📥 ფასების ბაზის შევსება</div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="form-row">
+            <div class="form-group">
+              <label>პროექტი <span style="font-size:10px;color:var(--text3)">(ავტო — ფოლდ. სახ.)</span></label>
+              <input type="text" id="importProject" placeholder="ავტომატურად შეივსება">
+            </div>
+            <div class="form-group">
+              <label>კონტრაქტორი</label>
+              <input type="text" id="importContractor" value="საწყისი">
+            </div>
+          </div>
+          <div class="form-row" style="margin-top:12px">
+            <div class="form-group">
+              <label>თარიღი</label>
+              <input type="date" id="importDate">
+            </div>
+            <div class="form-group">
+              <label>ვალუტა</label>
+              <select id="importCurrency">
+                <option value="₾">₾ ლარი</option>
+                <option value="$">$ დოლარი</option>
+                <option value="€">€ ევრო</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label>📁 ფოლდერის ატვირთვა — XLS/XLSX + PDF</label>
+          <div class="file-zone" id="importZone" onclick="document.getElementById('importFolderInput').click()">
+            <input type="file" id="importFolderInput" webkitdirectory multiple style="display:none"
+              onchange="handleImportFolderSelect(this)">
+            <div class="file-icon">📁</div>
+            <div class="file-label" id="importZoneLabel">ფოლდერის არჩევა</div>
+            <div class="file-sub">XLS → ფასები ამოიღება · PDF → Storage-ში ინახება</div>
+          </div>
+        </div>
+
+        <div id="importFolderInfo" style="display:none;margin-top:8px"></div>
+
+        <div style="margin-top:16px;display:flex;gap:10px">
+          <button class="btn btn-secondary" onclick="resetImportForm()">🔄 ახალი / გასუფთავება</button>
+        </div>
+
+        <div id="importResults" style="display:none;margin-top:16px"></div>
+      </div>
+    </div>
+
   </div><!-- /content -->
 </div><!-- /main -->
-
-<!-- ===== VIEW 3: IMPORT ===== -->
-<div id="view-import" style="display:none">
-  <div style="max-width:600px">
-    <div class="section-title" style="margin-bottom:20px">📥 ფასების ბაზის შევსება</div>
-
-    <div class="card" style="margin-bottom:16px">
-      <div class="form-row">
-        <div class="form-group">
-          <label>პროექტი <span style="font-size:10px;color:var(--text3)">(ავტო — ფოლდ. სახ.)</span></label>
-          <input type="text" id="importProject" placeholder="ავტომატურად შეივსება">
-        </div>
-        <div class="form-group">
-          <label>კონტრაქტორი</label>
-          <input type="text" id="importContractor" value="საწყისი">
-        </div>
-      </div>
-      <div class="form-row" style="margin-top:12px">
-        <div class="form-group">
-          <label>თარიღი</label>
-          <input type="date" id="importDate">
-        </div>
-        <div class="form-group">
-          <label>ვალუტა</label>
-          <select id="importCurrency">
-            <option value="₾">₾ ლარი</option>
-            <option value="$">$ დოლარი</option>
-            <option value="€">€ ევრო</option>
-          </select>
-        </div>
-      </div>
-    </div>
-
-    <div class="form-group">
-      <label>📁 ფოლდერის ატვირთვა — XLS/XLSX ფაილებით</label>
-      <div class="file-zone" id="importZone" onclick="document.getElementById('importFolderInput').click()">
-        <input type="file" id="importFolderInput" webkitdirectory multiple style="display:none"
-          onchange="handleImportFolderSelect(this)">
-        <div class="file-icon">📁</div>
-        <div class="file-label" id="importZoneLabel">ფოლდერის არჩევა</div>
-        <div class="file-sub">XLS/XLSX ფაილები ავტომატურად გაიფილტრება</div>
-      </div>
-    </div>
-
-    <div id="importFolderInfo" style="display:none;margin-top:8px"></div>
-
-    <div style="margin-top:16px">
-      <button class="btn btn-primary" onclick="runImport()" id="btnImport" disabled>📥 ატვირთვა unit_prices-ში</button>
-    </div>
-
-    <div id="importResults" style="display:none;margin-top:16px"></div>
-  </div>
-</div>
 
 <!-- ===== MODAL: NEW REQUEST ===== -->
 <div class="modal-overlay" id="modalOverlay" onclick="closeModalOut(event)">
@@ -656,6 +744,11 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
       </div>
 
       <!-- Editable fields -->
+      <div class="form-group">
+        <label>დასახელება <span style="font-size:10px;color:var(--text3)">(პროექტის სახელი — AI ამოიღებს, რედაქტირებადია)</span></label>
+        <input type="text" id="fTitle" placeholder="მაგ: ალგეთის ქვესადგური">
+      </div>
+
       <div class="form-row">
         <div class="form-group">
           <label>თარიღი</label>
@@ -677,12 +770,16 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
           </select>
         </div>
         <div class="form-group">
-          <label>კატეგორია <span style="font-size:10px;color:var(--text3)">(AI ამოიღებს)</span></label>
+          <label>კატეგორია</label>
           <select id="fCatManual">
-            <option value="">— AI ამოიღებს ავტ. —</option>
-            <option value="material">მასალა</option>
-            <option value="service">მომსახურება</option>
-            <option value="equipment">აღჭურვილობა</option>
+            <option value="">— აირჩიე —</option>
+            <option value="construction">სამშენებლო</option>
+            <option value="gktp">გკტპ</option>
+            <option value="cells">უჯრედები</option>
+            <option value="mv_lines">მ/ძ ხაზები</option>
+            <option value="scada">SCADA</option>
+            <option value="retrofit">რეტროფიტი</option>
+            <option value="relay">სარელეო</option>
           </select>
         </div>
       </div>
@@ -732,9 +829,15 @@ async function sbSaveRequest(entry) {
 async function sbLoadAll() {
   try {
     const r = await fetch(`${SB_URL}/rest/v1/requests?select=*&order=created_at.desc`, { headers: SB_H });
-    if (!r.ok) return null;
-    return await r.json();
-  } catch(e) { return null; }
+    if (!r.ok) {
+      const errText = await r.text();
+      console.error('sbLoadAll failed:', r.status, errText);
+      return null;
+    }
+    const data = await r.json();
+    console.log('sbLoadAll: loaded', data.length, 'requests');
+    return data;
+  } catch(e) { console.error('sbLoadAll error:', e); return null; }
 }
 
 async function sbDeleteRequest(id) {
@@ -760,6 +863,7 @@ function saveDb() { localStorage.setItem(DB_KEY, JSON.stringify(db)); }
 async function syncToCloud(entry) {
   const sbEntry = {
     id: entry.id, num: entry.num, project: entry.project,
+    title: entry.title || '',
     initiator: entry.initiator, cat: entry.cat, priority: entry.priority || 'mid',
     description: entry.desc || '', date: entry.date || '', deadline: entry.deadline || '',
     status: entry.status || 'new',
@@ -787,16 +891,28 @@ function showView(v) {
   document.getElementById('view-requests').style.display = v === 'requests' ? 'block' : 'none';
   document.getElementById('view-detail').style.display   = v === 'detail'   ? 'block' : 'none';
   document.getElementById('view-import').style.display   = v === 'import'   ? 'block' : 'none';
+  document.getElementById('view-prices').style.display   = v === 'prices'   ? 'block' : 'none';
   // Nav active state
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
   if (v === 'requests') document.querySelector('.nav-item[onclick*="requests"]')?.classList.add('active');
   if (v === 'import')   document.getElementById('nav-import')?.classList.add('active');
+  if (v === 'prices')   document.getElementById('nav-prices')?.classList.add('active');
   if (v === 'import') {
     document.getElementById('topbarTitle').textContent = 'ფასების იმპ.';
     document.getElementById('topbarSub').textContent = '/ საწყისი ბაზა';
     // Set today as default date if empty
     const d = document.getElementById('importDate');
     if (d && !d.value) d.value = new Date().toISOString().slice(0, 10);
+  }
+  if (v === 'prices') {
+    document.getElementById('topbarTitle').textContent = 'ფასების ბაზა';
+    document.getElementById('topbarSub').textContent = '/ მოდული 3';
+    // Don't auto-load — wait for user to click "ჩატვირთვა"
+    if (!pricesData.length) {
+      document.getElementById('priceTableBody').innerHTML =
+        '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text2)">📊 დააჭირე „ჩატვირთვა" ღილაკს ბაზის სანახავად</td></tr>';
+      document.getElementById('priceTableEmpty').style.display = 'none';
+    }
   }
   if (v === 'requests') {
     document.getElementById('topbarTitle').textContent = 'მოთხოვნები';
@@ -812,7 +928,7 @@ function renderStats() {
   document.getElementById('statActive').textContent = db.filter(r => r.status === 'new' || r.status === 'review').length;
   document.getElementById('statTender').textContent = db.filter(r => r.status === 'tender').length;
   document.getElementById('statDone').textContent   = db.filter(r => r.status === 'done').length;
-  document.getElementById('navBadge').textContent   = db.filter(r => r.status === 'new').length;
+  document.getElementById('navBadge').textContent   = db.length;
 }
 
 // ===== TABLE =====
@@ -823,7 +939,7 @@ const STATUS_MAP = {
   done:   { label: 'დასრულებული',     cls: 'badge-done' },
   wait:   { label: 'მოლოდინი',        cls: 'badge-wait' },
 };
-const CAT_MAP = { material: 'მასალა', service: 'მომსახ.', equipment: 'აღჭურვ.' };
+const CAT_MAP = { construction: 'სამშენებლო', gktp: 'გკტპ', cells: 'უჯრედები', mv_lines: 'მ/ძ ხაზები', scada: 'SCADA', retrofit: 'რეტროფიტი', relay: 'სარელეო', material: 'მასალა', service: 'მომსახ.', equipment: 'აღჭურვ.' };
 const PRI_MAP = {
   high: '<span class="priority priority-high">მაღალი</span>',
   mid:  '<span class="priority priority-mid">საშუალო</span>',
@@ -839,6 +955,7 @@ function renderTable() {
     const matchS = !search ||
       (r.num||'').toLowerCase().includes(search) ||
       (r.project||'').toLowerCase().includes(search) ||
+      (r.title||'').toLowerCase().includes(search) ||
       (r.initiator||'').toLowerCase().includes(search);
     const matchSt = !fStatus || r.status === fStatus;
     const matchC  = !fCat    || r.cat === fCat;
@@ -861,10 +978,9 @@ function renderTable() {
     return `<tr onclick="openDetail('${r.id}')">
       <td><div class="td-num">${r.num}</div></td>
       <td>
-        <div class="td-main">${r.project}</div>
-        ${r.desc ? `<div class="td-sub">${r.desc.slice(0, 60)}${r.desc.length > 60 ? '...' : ''}</div>` : ''}
+        <div class="td-main">${r.title || r.project}</div>
+        ${r.title ? `<div class="td-sub" style="color:var(--text3)">${r.project}</div>` : (r.desc ? `<div class="td-sub">${r.desc.slice(0, 60)}${r.desc.length > 60 ? '...' : ''}</div>` : '')}
       </td>
-      <td><div style="font-size:13px;color:var(--text2)">${r.initiator}</div></td>
       <td><span class="cat-badge">${catLabel}</span></td>
       <td>${PRI_MAP[r.priority] || PRI_MAP.mid}</td>
       <td><span class="badge ${st.cls}">${st.label}</span></td>
@@ -886,8 +1002,8 @@ function openDetail(id) {
   currentId = id;
 
   document.getElementById('detailNum').textContent = r.num;
-  document.getElementById('detailTitle').textContent = r.project;
-  document.getElementById('topbarTitle').textContent = r.project;
+  document.getElementById('detailTitle').textContent = r.title || r.project;
+  document.getElementById('topbarTitle').textContent = r.title || r.project;
   document.getElementById('topbarSub').textContent = `/ ${r.num}`;
 
   // Status flow
@@ -900,9 +1016,9 @@ function openDetail(id) {
 
   // Fields grid
   const fields = [
-    ['პროექტი', r.project],
-    ['ინიციატორი', r.initiator],
-    ['კატეგორია', CAT_MAP[r.cat] || r.cat],
+    ['პროექტი (№)', r.project],
+    ['დასახელება', r.title || '—'],
+    ['კატეგორია', CAT_MAP[r.cat] || r.cat || '—'],
     ['პრიორიტეტი', r.priority === 'high' ? '🔴 მაღალი' : r.priority === 'low' ? '🟢 დაბალი' : '🟡 საშუალო'],
     ['შექმნის თარიღი', r.date || '—'],
     ['Deadline', r.deadline || '—'],
@@ -971,6 +1087,25 @@ function openDetail(id) {
   } else {
     chatSection.style.display = 'none';
     chatFileContext = '';
+  }
+
+  // ── Add prices to DB section — ჩანს თუ ფასიანი XLS არის და ანალიზი გაკეთდა ──
+  const addPricesSection = document.getElementById('addPricesSection');
+  const statusEl = document.getElementById('addPricesStatus');
+  const btnAdd = document.getElementById('btnAddPrices');
+  if (hasAnalysis && r.hasPricedXls) {
+    addPricesSection.style.display = 'block';
+    if (r.pricesSavedToDb) {
+      statusEl.innerHTML = '<span style="color:var(--green)">✅ ფასები უკვე დაემატა ბაზაში</span>';
+      btnAdd.style.display = 'none';
+    } else {
+      statusEl.innerHTML = '';
+      btnAdd.style.display = 'inline-flex';
+      btnAdd.disabled = false;
+      btnAdd.textContent = '💰 ფასები ბაზაში დამატება';
+    }
+  } else {
+    addPricesSection.style.display = 'none';
   }
 
   // ── Pricing section — ეტაპი B ──────────────────────────────────
@@ -1114,6 +1249,47 @@ async function handleReupload(input) {
   }, 800);
 }
 
+// ── დამატებითი ფაილების ატვირთვა არსებულ მოთხოვნაში (მუდმივად, Storage-ში) ──
+async function handleAddFiles(input) {
+  const files = Array.from(input.files);
+  if (!files.length) return;
+  const r = db.find(x => x.id === currentId);
+  if (!r) return;
+
+  const statusEl = document.getElementById('addFilesStatus');
+  statusEl.innerHTML = '<span style="color:var(--text2)">⏳ ' + files.length + ' ფაილი იტვირთება Storage-ში...</span>';
+
+  try {
+    const fd = new FormData();
+    fd.append('requestId', r.id);
+    fd.append('num', r.num || '');
+    fd.append('project', r.project || '');
+    for (const f of files) fd.append('files', f, f.name);
+
+    const resp = await fetch(BACKEND_URL + '/upload-files', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+
+    // Update local db with merged file list from backend
+    const idx = db.findIndex(x => x.id === currentId);
+    if (idx >= 0 && data.files) {
+      db[idx].files = data.files;
+      saveDb();
+    }
+
+    statusEl.innerHTML = '<span style="color:var(--green)">✅ ' + (data.added || files.length) + ' ფაილი დაემატა</span>';
+    input.value = '';
+    // Refresh detail view to show new files
+    openDetail(currentId);
+    showToast('✅ ' + (data.added || files.length) + ' ფაილი დაემატა ☁️', 'success');
+    setTimeout(() => { const el = document.getElementById('addFilesStatus'); if (el) el.innerHTML = ''; }, 3000);
+
+  } catch(e) {
+    const isFetchFail = /failed to fetch|networkerror|load failed/i.test(e.message);
+    statusEl.innerHTML = '<span style="color:var(--red)">⚠️ ' + (isFetchFail ? 'სერვერმა ვერ უპასუხა — სცადე თავიდან' : e.message) + '</span>';
+  }
+}
+
 // ===== BACKEND CONFIG =====
 const BACKEND_URL = 'https://procurement-system-se17.onrender.com';
 
@@ -1187,30 +1363,191 @@ let importFiles = []; // bulk import XLS files
 
 function handleImportFolderSelect(input) {
   const all = Array.from(input.files);
-  importFiles = all.filter(f => /\.(xls|xlsx)$/i.test(f.name));
-  if (!importFiles.length) { showToast('⚠️ XLS/XLSX ფაილი ვერ მოიძებნა', 'error'); return; }
+  importFiles = all.filter(f => /\.(xls|xlsx|pdf|doc|docx)$/i.test(f.name));
+  if (!importFiles.length) { showToast('⚠️ XLS/PDF/Word ფაილი ვერ მოიძებნა', 'error'); return; }
 
   const folderName = all[0]?.webkitRelativePath?.split('/')[0] || 'ფოლდერი';
   const projInput = document.getElementById('importProject');
   if (projInput && !projInput.value) projInput.value = folderName;
 
-  document.getElementById('importZoneLabel').textContent = '✅ ' + importFiles.length + ' ფაილი';
+  const xlsFiles = importFiles.filter(f => /\.(xls|xlsx)$/i.test(f.name));
+  const pdfCount = importFiles.filter(f => /\.pdf$/i.test(f.name)).length;
+  const docCount = importFiles.filter(f => /\.(doc|docx)$/i.test(f.name)).length;
+  const counts = [`${xlsFiles.length} XLS`, pdfCount ? `${pdfCount} PDF` : '', docCount ? `${docCount} Word` : ''].filter(Boolean).join(', ');
+  document.getElementById('importZoneLabel').textContent = `✅ ${importFiles.length} ფაილი (${counts})`;
   document.getElementById('importZone').classList.add('has-file');
 
   const info = document.getElementById('importFolderInfo');
   info.style.display = 'block';
   info.innerHTML = `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 14px">
-    <div style="font-size:11px;font-weight:700;color:var(--green);margin-bottom:6px">✅ ${importFiles.length} XLS/XLSX · ფოლდ: ${folderName}</div>
-    ${importFiles.map(f => `<div style="font-size:11px;color:var(--text2)">📊 ${f.name} <span style="color:var(--text3)">(${(f.size/1024).toFixed(0)} KB)</span></div>`).join('')}
+    <div style="font-size:11px;font-weight:700;color:var(--green);margin-bottom:6px">✅ ${importFiles.length} ფაილი · ფოლდ: ${folderName}</div>
+    ${importFiles.map(f => {
+      const isXls = /\.(xls|xlsx)$/i.test(f.name);
+      const icon = /\.pdf$/i.test(f.name) ? '📄' : /\.(doc|docx)$/i.test(f.name) ? '📝' : '📊';
+      const note = isXls ? '<span style="color:var(--accent2)"> · ფასები ამოიღება</span>' : '<span style="color:var(--text3)"> · Storage</span>';
+      return `<div style="font-size:11px;color:var(--text2)">${icon} ${f.name} <span style="color:var(--text3)">(${(f.size/1024).toFixed(0)} KB)</span>${note}</div>`;
+    }).join('')}
   </div>`;
-  document.getElementById('btnImport').disabled = false;
+
+  // No XLS = no prices to import
+  if (xlsFiles.length === 0) {
+    showToast('⚠️ ფასების ცხრილი (XLS) ვერ მოიძებნა — ფასები ვერ დაემატება', 'error');
+    info.innerHTML += `<div style="font-size:12px;color:var(--amber);margin-top:8px;padding:8px 12px;background:rgba(245,158,11,0.1);border-radius:6px">⚠️ XLS ფასების ცხრილი არ არის — მხოლოდ PDF აიტვირთება Storage-ში, ფასები ბაზაში არ დაემატება</div>`;
+    return;
+  }
+
+  // Auto-import immediately
+  runImport();
+}
+
+function resetImportForm() {
+  importFiles = [];
+  document.getElementById('importProject').value = '';
+  document.getElementById('importContractor').value = 'საწყისი';
+  document.getElementById('importDate').value = new Date().toISOString().slice(0, 10);
+  document.getElementById('importCurrency').value = '₾';
+  document.getElementById('importFolderInput').value = '';
+  document.getElementById('importZoneLabel').textContent = 'ფოლდერის არჩევა';
+  document.getElementById('importZone').classList.remove('has-file');
+  document.getElementById('importFolderInfo').style.display = 'none';
+  document.getElementById('importFolderInfo').innerHTML = '';
+  document.getElementById('importResults').style.display = 'none';
+  document.getElementById('importResults').innerHTML = '';
+}
+
+// ── ფასების ბაზა (მოდული 3) ────────────────────────────────────
+let pricesData = [];
+
+async function loadPrices() {
+  const tbody = document.getElementById('priceTableBody');
+  tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--text2)">⏳ იტვირთება...</td></tr>';
+  document.getElementById('priceSearch').value = '';
+  try {
+    const resp = await fetch(BACKEND_URL + '/prices');
+    if (!resp.ok) throw new Error('სერვერი ვერ პასუხობს (' + resp.status + ') — server.js განახლებულია?');
+    const data = await resp.json();
+    pricesData = data.items || [];
+    populatePriceFilters();
+    renderPrices();
+  } catch(e) {
+    const msg = e.message.includes('JSON') ? 'backend ჯერ არ განახლებულა — ატვირთე server.js Render-ზე' : e.message;
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--red)">⚠️ ${msg}</td></tr>`;
+  }
+}
+
+function populatePriceFilters() {
+  const projects = [...new Set(pricesData.map(p => p.project_name).filter(Boolean))].sort();
+  const contractors = [...new Set(pricesData.map(p => p.contractor).filter(Boolean))].sort();
+
+  const pSel = document.getElementById('priceFilterProject');
+  const cSel = document.getElementById('priceFilterContractor');
+  const pVal = pSel.value, cVal = cSel.value;
+
+  pSel.innerHTML = '<option value="">ყველა პროექტი</option>' +
+    projects.map(p => `<option value="${p.replace(/"/g,'&quot;')}">${p}</option>`).join('');
+  cSel.innerHTML = '<option value="">ყველა კონტრაქტორი</option>' +
+    contractors.map(c => `<option value="${c.replace(/"/g,'&quot;')}">${c}</option>`).join('');
+  pSel.value = pVal; cSel.value = cVal;
+}
+
+function getFilteredPrices() {
+  const search = (document.getElementById('priceSearch').value || '').toLowerCase();
+  const fProj = document.getElementById('priceFilterProject').value;
+  const fContr = document.getElementById('priceFilterContractor').value;
+  const sort = document.getElementById('priceSort').value;
+
+  let rows = pricesData.filter(p => {
+    const matchS = !search ||
+      (p.work_name || '').toLowerCase().includes(search) ||
+      (p.project_name || '').toLowerCase().includes(search) ||
+      (p.request_id || '').toLowerCase().includes(search) ||
+      (p.contractor || '').toLowerCase().includes(search);
+    const matchP = !fProj || p.project_name === fProj;
+    const matchC = !fContr || p.contractor === fContr;
+    return matchS && matchP && matchC;
+  });
+
+  rows.sort((a, b) => {
+    if (sort === 'name') return (a.work_name||'').localeCompare(b.work_name||'', 'ka');
+    if (sort === 'price_asc') return (parseFloat(a.unit_price)||0) - (parseFloat(b.unit_price)||0);
+    if (sort === 'price_desc') return (parseFloat(b.unit_price)||0) - (parseFloat(a.unit_price)||0);
+    return new Date(b.created_at||0) - new Date(a.created_at||0); // date
+  });
+  return rows;
+}
+
+function renderPrices() {
+  const rows = getFilteredPrices();
+  const tbody = document.getElementById('priceTableBody');
+  const empty = document.getElementById('priceTableEmpty');
+
+  // Stats (based on full data, not filtered)
+  document.getElementById('priceStatTotal').textContent = pricesData.length;
+  document.getElementById('priceStatProjects').textContent = new Set(pricesData.map(p => p.project_name).filter(Boolean)).size;
+  document.getElementById('priceStatContractors').textContent = new Set(pricesData.map(p => p.contractor).filter(Boolean)).size;
+  document.getElementById('priceStatWorks').textContent = new Set(pricesData.map(p => (p.work_name||'').toLowerCase().trim()).filter(Boolean)).size;
+
+  if (!rows.length) {
+    tbody.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+
+  tbody.innerHTML = rows.map(p => {
+    const price = (parseFloat(p.unit_price) || 0).toLocaleString('ka-GE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return `<tr>
+      <td><div class="td-main" style="font-size:13px">${p.work_name || '—'}</div></td>
+      <td><div class="td-date">${p.quantity || '—'}</div></td>
+      <td><div style="font-size:12px;color:var(--text2)">${p.unit || '—'}</div></td>
+      <td><div style="font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--green);font-weight:500">${price} ${p.currency || '₾'}</div></td>
+      <td><div style="font-size:12px;color:var(--text2)">${p.project_name || '—'}</div></td>
+      <td><span class="cat-badge">${p.contractor || '—'}</span></td>
+      <td><div class="td-date">${p.date || '—'}</div></td>
+    </tr>`;
+  }).join('');
+}
+
+function exportPricesCsv() {
+  const rows = getFilteredPrices();
+  if (!rows.length) { showToast('⚠️ ცარიელია', 'error'); return; }
+  const headers = ['სამუშაო','რაოდენობა','ერთეული','ფასი','ვალუტა','პროექტი','კონტრაქტორი','თარიღი'];
+  const csv = [headers.join(',')].concat(
+    rows.map(p => [
+      `"${(p.work_name||'').replace(/"/g,'""')}"`,
+      p.quantity || '',
+      `"${(p.unit||'').replace(/"/g,'""')}"`,
+      p.unit_price || '',
+      p.currency || '₾',
+      `"${(p.project_name||'').replace(/"/g,'""')}"`,
+      `"${(p.contractor||'').replace(/"/g,'""')}"`,
+      p.date || ''
+    ].join(','))
+  ).join('\n');
+
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'prices_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('📥 CSV ჩამოიტვირთა', 'success');
 }
 
 async function runImport() {
   if (!importFiles.length) return;
+
+  // Duplicate check — same project № already exists?
+  const projNum = document.getElementById('importProject').value.trim();
+  if (projNum && db.some(r => (r.num || '').trim().toLowerCase() === projNum.toLowerCase())) {
+    showToast('⚠️ მოთხოვნა №' + projNum + ' უკვე არსებობს — ჯერ წაშალე ან სხვა № მიუთითე', 'error');
+    return;
+  }
+
   const btn = document.getElementById('btnImport');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ მიმდინარეობს...'; }
   const resultsEl = document.getElementById('importResults');
-  btn.disabled = true; btn.textContent = '⏳ მიმდინარეობს...';
   resultsEl.style.display = 'block';
   resultsEl.innerHTML = '<div style="font-size:12px;color:var(--text2)">ფაილები სერვერზე იგზავნება... (AI ამოღება — შესაძლოა 1-2 წთ)</div>';
 
@@ -1227,20 +1564,68 @@ async function runImport() {
     if (data.error) throw new Error(data.error);
 
     const total = data.results.reduce((s, r) => s + r.itemsSaved, 0);
-    resultsEl.innerHTML = data.results.map(r => `
-      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:8px">
-        <div style="font-size:12px;font-weight:600;color:var(--text)">📊 ${r.file}</div>
-        <div style="font-size:11px;color:var(--green);margin-top:3px">✅ ${r.itemsSaved} / ${r.total} ფასი შეინახა</div>
-        <div style="font-size:10px;color:var(--text3);margin-top:2px">☁️ ${r.storagePath}</div>
-      </div>`).join('') +
-      `<div style="font-size:13px;font-weight:600;color:var(--green);margin-top:8px">სულ: ${total} პოზიცია</div>`;
+    const xlsResults = data.results.filter(r => r.type !== 'storage-only' && r.type !== 'no-prices');
+    const xlsWithZero = xlsResults.filter(r => r.itemsSaved === 0);
 
-    showToast('✅ ' + total + ' ფასი unit_prices-ში', 'success');
+    resultsEl.innerHTML = data.results.map(r => {
+      const isStorage = r.type === 'storage-only';
+      const isNoPrices = r.type === 'no-prices';
+      const zeroXls = !isStorage && !isNoPrices && r.itemsSaved === 0;
+      const icon = isStorage ? (/\.(doc|docx)$/i.test(r.file) ? '📝' : '📄') : '📊';
+      let color, msg;
+      if (isStorage) { color = 'var(--text2)'; msg = '☁️ Storage-ში შეინახა'; }
+      else if (isNoPrices) { color = 'var(--text2)'; msg = '📋 ფასების გარეშე (სპეციფიკაცია) — Storage-ში შეინახა'; }
+      else if (zeroXls) { color = 'var(--amber)'; msg = '⚠️ ფასი ვერ ამოვიღე — ფასების სვეტი ცარიელია'; }
+      else { color = 'var(--green)'; msg = `✅ ${r.itemsSaved} ფასი შეინახა`; }
+      return `<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:8px">
+        <div style="font-size:12px;font-weight:600;color:var(--text)">${icon} ${r.file}</div>
+        <div style="font-size:11px;margin-top:3px;color:${color}">${msg}</div>
+      </div>`;
+    }).join('') +
+      `<div style="font-size:13px;font-weight:600;color:${total > 0 ? 'var(--green)' : 'var(--amber)'};margin-top:8px">ფასები სულ: ${total} პოზ.</div>`;
+
+    if (total === 0 && xlsWithZero.length > 0) {
+      showToast('⚠️ ფასი ვერ დაემატა — ცხრილში ფასების სვეტი ცარიელია', 'error');
+    } else if (total === 0) {
+      showToast('✅ ფაილები შეინახა · მოთხ. №' + (data.requestNum || '') + ' (ფასების გარეშე)', 'success');
+    } else {
+      showToast('✅ ' + total + ' ფასი · მოთხ. №' + (data.requestNum || '') + ' (დასრულებული)', 'success');
+    }
+
+    // Add the created request directly to local db (cloud read is blocked by RLS)
+    if (data.requestId && data.requestNum) {
+      const fileMetas = importFiles.map(f => ({ name: f.name, size: f.size, text: '' }));
+      const existing = db.findIndex(x => x.id === data.requestId);
+      const newReq = {
+        id: data.requestId,
+        num: data.requestNum,
+        project: document.getElementById('importProject').value.trim() || data.requestNum,
+        initiator: document.getElementById('importContractor').value.trim() || 'საწყისი',
+        cat: 'service',
+        priority: 'mid',
+        desc: '',
+        date: document.getElementById('importDate').value || new Date().toISOString().slice(0,10),
+        deadline: '',
+        status: 'done',
+        files: fileMetas,
+        aiAnalysis: null,
+        analysisHistory: [],
+      };
+      if (existing >= 0) db[existing] = newReq;
+      else db.push(newReq);
+      saveDb();
+      renderTable();
+      renderStats();
+    }
   } catch(e) {
-    resultsEl.innerHTML = `<div style="font-size:12px;color:var(--red)">⚠️ ${e.message}</div>`;
-    showToast('⚠️ ' + e.message, 'error');
+    const isFetchFail = /failed to fetch|networkerror|load failed/i.test(e.message);
+    const msg = isFetchFail
+      ? '⚠️ სერვერმა ვერ უპასუხა (timeout). სცადე ნაკლები/მცირე ფაილით, ან თავიდან სცადე — სერვერი შესაძლოა "გაიღვიძებს" (Render free-tier ~30წმ).'
+      : '⚠️ ' + e.message;
+    resultsEl.innerHTML = `<div style="font-size:12px;color:var(--red)">${msg}</div>`;
+    showToast(isFetchFail ? '⚠️ სერვერმა ვერ უპასუხა — სცადე თავიდან' : '⚠️ ' + e.message, 'error');
   } finally {
-    btn.disabled = false; btn.textContent = '📥 ატვირთვა unit_prices-ში';
+    if (btn) { btn.disabled = false; btn.textContent = '📥 ატვირთვა unit_prices-ში'; }
   }
 }
 
@@ -1386,6 +1771,7 @@ async function runAiAnalysis() {
       db[idx].analysisHistory.push({ date: new Date().toLocaleString('ka-GE'), analysis });
       if (db[idx].status === 'new') db[idx].status = 'review';
       if (data.files && data.files.length) db[idx].files = data.files;
+      db[idx].hasPricedXls = !!data.hasPricedXls;
       saveDb(); syncToCloud(db[idx]);
     }
 
@@ -1403,7 +1789,48 @@ async function runAiAnalysis() {
   }
 }
 
-// ===== CHAT =====
+// ── ფასების ბაზაში დამატება — მომხმარებლის ბრძანებით ──────────────
+async function addRequestPricesToDb() {
+  const r = db.find(x => x.id === currentId);
+  if (!r) return;
+  const btn = document.getElementById('btnAddPrices');
+  const statusEl = document.getElementById('addPricesStatus');
+  btn.disabled = true; btn.textContent = '⏳ ემატება...';
+
+  try {
+    const fd = new FormData();
+    fd.append('requestId', r.id);
+    const resp = await fetch(BACKEND_URL + '/save-request-prices', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error);
+
+    if (data.alreadyExists) {
+      statusEl.innerHTML = '<span style="color:var(--amber)">⚠️ ' + (data.message || 'ფასები უკვე ბაზაშია') + '</span>';
+      btn.style.display = 'none';
+      // mark locally
+      const idx = db.findIndex(x => x.id === currentId);
+      if (idx >= 0) { db[idx].pricesSavedToDb = true; saveDb(); }
+      showToast('⚠️ ფასები უკვე ბაზაშია', 'error');
+      return;
+    }
+    if (data.noPricedXls) {
+      statusEl.innerHTML = '<span style="color:var(--amber)">⚠️ ' + (data.message || 'ფასიანი XLS ვერ მოიძებნა') + '</span>';
+      btn.disabled = false; btn.textContent = '💰 ფასები ბაზაში დამატება';
+      return;
+    }
+
+    // Success
+    statusEl.innerHTML = '<span style="color:var(--green)">✅ ' + data.pricesSaved + ' ფასი დაემატა ბაზაში</span>';
+    btn.style.display = 'none';
+    const idx = db.findIndex(x => x.id === currentId);
+    if (idx >= 0) { db[idx].pricesSavedToDb = true; saveDb(); syncToCloud(db[idx]); }
+    showToast('✅ ' + data.pricesSaved + ' ფასი ბაზაში ☁️', 'success');
+
+  } catch(e) {
+    statusEl.innerHTML = '<span style="color:var(--red)">⚠️ ' + e.message + '</span>';
+    btn.disabled = false; btn.textContent = '💰 ფასები ბაზაში დამატება';
+  }
+}
 function addChatBubble(role, text) {
   const el = document.createElement('div');
   el.style.cssText = role === 'user'
@@ -1491,6 +1918,7 @@ function openNewModal() {
   const twoWeeks = new Date(today); twoWeeks.setDate(twoWeeks.getDate() + 14);
   document.getElementById('fNum').value = '';
   document.getElementById('fProject').value = '';
+  document.getElementById('fTitle').value = '';
   document.getElementById('fInitiator').value = '';
   document.getElementById('fCat').value = '';
   document.getElementById('fCatManual').value = '';
@@ -1517,6 +1945,7 @@ function openEdit(id) {
   document.getElementById('fNum').value = r.num;
   document.getElementById('fDate').value = r.date || '';
   document.getElementById('fProject').value = r.project;
+  document.getElementById('fTitle').value = r.title || r.desc || '';
   document.getElementById('fInitiator').value = r.initiator;
   document.getElementById('fCat').value = r.cat;
   document.getElementById('fCatManual').value = r.cat;
@@ -1524,13 +1953,11 @@ function openEdit(id) {
   document.getElementById('fDesc').value = r.desc || '';
   document.getElementById('fDeadline').value = r.deadline || '';
   // Show auto-filled panel with current values
-  const catLabel = { material: 'მასალა', service: 'მომსახ.', equipment: 'აღჭურვ.' };
   document.getElementById('autoFilledPanel').style.display = 'block';
   document.getElementById('autoFilledGrid').innerHTML = [
     ['№ მოთხოვნა', r.num],
-    ['პროექტი', r.project],
-    ['ინიციატორი', r.initiator],
-    ['კატეგორია', catLabel[r.cat] || r.cat],
+    ['დასახელება', r.title || '—'],
+    ['კატეგორია', CAT_MAP[r.cat] || r.cat || '—'],
   ].map(([l,v]) => `<div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 10px;">
     <div style="font-size:10px;color:var(--text3);margin-bottom:2px">${l}</div>
     <div style="font-size:13px;font-weight:500;color:var(--text)">${v}</div>
@@ -1583,7 +2010,6 @@ async function handleFolderSelect(input) {
     } catch(e) { text = ''; }
     folderFiles.push({ name: f.name, size: f.size, text });
     rawFileObjects[f.name] = f;
-    rawFileObjects[f.name] = f;
   }
 
   // 3. Show file list
@@ -1620,9 +2046,9 @@ async function extractMetaFromFiles(folderName) {
     (textSample ? '\nდოკუმენტების შინაარსი:\n' + textSample : '\n[ტექსტი ვერ ამოიღება]') +
     '\n\nამოიღე შემდეგი ინფორმაცია და გიპასუხე მხოლოდ JSON-ში:\n' +
     '{\n' +
-    '  "project": "პროექტის დასახელება (თუ ვერ ამოიღე — ფოლდერის სახელი გამოიყენე)",\n' +
-    '  "initiator": "ინიციატორის სახელი ან განყოფილება (თუ ვერ ამოიღე — \"\")",\n' +
-    '  "cat": "material ან service ან equipment (მხოლოდ ეს სამი, default — service)"\n' +
+    '  "title": "პროექტის/ობიექტის დასახელება — მაგ: \\"ალგეთის ქვესადგური\\", \\"35/10 კვ ქვ/ს ბრეთი\\" (ამოიღე დოკუმენტიდან; თუ ვერ ამოიღე — \\"\\")",\n' +
+    '  "initiator": "ინიციატორის სახელი ან განყოფილება (თუ ვერ ამოიღე — \\"\\")",\n' +
+    '  "cat": "კატეგორია — მხოლოდ ერთი: construction (სამშენებლო), gktp (გკტპ), cells (უჯრედები), mv_lines (მ/ძ ხაზები), scada (SCADA), retrofit (რეტროფიტი), relay (სარელეო დაცვა). თუ ვერ განსაზღვრე — \\"\\""\n' +
     '}\n' +
     'JSON-ის გარდა არაფერი.';
 
@@ -1630,23 +2056,22 @@ async function extractMetaFromFiles(folderName) {
     const text = await callGemini([{ type: 'text', text: prompt }], null, 300);
     const meta = JSON.parse(text.replace(/```json|```/g, '').trim());
 
-    // Fill hidden fields
-    document.getElementById('fProject').value   = meta.project   || folderName;
+    // Fill fields
+    document.getElementById('fProject').value   = folderName;  // project stays = folder №
+    document.getElementById('fTitle').value     = meta.title    || '';
     document.getElementById('fInitiator').value = meta.initiator || '';
-    document.getElementById('fCat').value        = meta.cat       || 'service';
+    document.getElementById('fCat').value        = meta.cat       || '';
 
-    // Also set manual cat select if detected
+    // Set manual cat select if detected
     const catSel = document.getElementById('fCatManual');
-    if (meta.cat && ['material','service','equipment'].includes(meta.cat)) {
+    if (meta.cat && ['construction','gktp','cells','mv_lines','scada','retrofit','relay'].includes(meta.cat)) {
       catSel.value = meta.cat;
     }
 
-    const catLabel = { material: 'მასალა', service: 'მომსახ.', equipment: 'აღჭურვ.' };
     grid.innerHTML = [
       ['№ მოთხოვნა', folderName],
-      ['პროექტი', meta.project || folderName],
-      ['ინიციატორი', meta.initiator || '—'],
-      ['კატეგორია', catLabel[meta.cat] || meta.cat],
+      ['დასახელება', meta.title || '— (ხელით შეავსე)'],
+      ['კატეგორია', CAT_MAP[meta.cat] || '— (აირჩიე)'],
     ].map(([l,v]) => `
       <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 10px;">
         <div style="font-size:10px;color:var(--text3);margin-bottom:2px">${l}</div>
@@ -1656,8 +2081,9 @@ async function extractMetaFromFiles(folderName) {
   } catch(e) {
     // Fallback — just use folder name
     document.getElementById('fProject').value   = folderName;
+    document.getElementById('fTitle').value     = '';
     document.getElementById('fInitiator').value = '';
-    document.getElementById('fCat').value        = 'service';
+    document.getElementById('fCat').value        = '';
     grid.innerHTML = `
       <div style="grid-column:1/-1">
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 10px;">
@@ -1691,18 +2117,25 @@ function saveRequest() {
 
   const num       = document.getElementById('fNum').value.trim() || new Date().getTime().toString();
   const project   = document.getElementById('fProject').value.trim() || num;
+  const title     = document.getElementById('fTitle').value.trim();
   const initiator = document.getElementById('fInitiator').value.trim() || '—';
-  const cat       = document.getElementById('fCat').value || 'service';
+  const cat       = document.getElementById('fCat').value || '';
 
   if (!document.getElementById('fFolder').files.length && !editingId) {
     showToast('⚠️ ჯერ ფოლდერი ატვირთეთ', 'error');
     return;
   }
 
+  // Duplicate check — only for new requests
+  if (!editingId && db.some(r => (r.num || '').trim().toLowerCase() === num.toLowerCase())) {
+    showToast('⚠️ მოთხოვნა №' + num + ' უკვე არსებობს — ჯერ წაშალე ან სხვა № მიუთითე', 'error');
+    return;
+  }
+
   if (editingId) {
     const idx = db.findIndex(x => x.id === editingId);
     if (idx >= 0) {
-      db[idx] = { ...db[idx], num, project, initiator, cat,
+      db[idx] = { ...db[idx], num, project, title, initiator, cat,
         priority: document.getElementById('fPriority').value,
         desc: document.getElementById('fDesc').value.trim(),
         deadline: document.getElementById('fDeadline').value,
@@ -1712,7 +2145,7 @@ function saveRequest() {
   } else {
     db.push({
       id: 'req_' + Date.now(),
-      num, project, initiator, cat,
+      num, project, title, initiator, cat,
       priority: document.getElementById('fPriority').value,
       desc: document.getElementById('fDesc').value.trim(),
       date: document.getElementById('fDate').value,
@@ -1734,20 +2167,45 @@ function saveRequest() {
       if (ok) showToast(editingId ? '✅ შენახულია ☁️' : '✅ დამატებულია ☁️', 'success');
       else showToast(editingId ? '✅ შენახულია (local)' : '✅ დამატებულია (local)', 'success');
     });
+    // Upload raw files to Storage immediately (so they persist without running analysis)
+    if (folderFiles.length) uploadFilesToStorage(saved.id);
   } else {
     showToast(editingId ? '✅ შენახულია' : '✅ დამატებულია', 'success');
   }
 }
 
+// Upload all raw files to backend Storage for a request (no analysis)
+async function uploadFilesToStorage(requestId) {
+  const r = db.find(x => x.id === requestId);
+  if (!r) return;
+  const fd = new FormData();
+  fd.append('requestId', requestId);
+  fd.append('project', r.project || '');
+  fd.append('num', r.num || '');
+  let count = 0;
+  for (const fi of (r.files || [])) {
+    if (rawFileObjects[fi.name]) { fd.append('files', rawFileObjects[fi.name], fi.name); count++; }
+  }
+  if (count === 0) return;
+  try {
+    const resp = await fetch(BACKEND_URL + '/upload-files', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.files && data.files.length) {
+      const idx = db.findIndex(x => x.id === requestId);
+      if (idx >= 0) { db[idx].files = data.files; saveDb(); }
+    }
+  } catch(e) { console.error('Storage upload:', e); }
+}
+
 // ===== DELETE =====
 async function deleteRequest(id) {
-  if (!confirm('წაიშალოს მოთხოვნა?')) return;
+  if (!confirm('წაიშალოს მოთხოვნა? (ფაილებიც და ფასებიც ბაზიდან წაიშლება)')) return;
   db = db.filter(x => x.id !== id);
   saveDb();
   renderTable();
   renderStats();
   await fetch(BACKEND_URL + '/request/' + encodeURIComponent(id), { method: 'DELETE' }).catch(()=>{});
-  showToast('🗑️ წაიშალა');
+  showToast('🗑️ წაიშალა — მოთხოვნა, ფაილები, ფასები');
 }
 
 // ===== TOAST =====
@@ -1760,12 +2218,13 @@ function showToast(msg, type = '') {
 
 // ===== INIT =====
 async function initApp() {
-  // Try loading from Supabase first
   const cloudData = await sbLoadAll();
-  if (cloudData && cloudData.length) {
-    // Map cloud fields to local format
-    db = cloudData.map(r => ({
-      id: r.id, num: r.num, project: r.project,
+  const localData = loadDb();  // current localStorage
+
+  if (cloudData) {
+    // Map cloud → local format
+    const cloudMapped = cloudData.map(r => ({
+      id: r.id, num: r.num, project: r.project, title: r.title || '',
       initiator: r.initiator, cat: r.cat, priority: r.priority || 'mid',
       desc: r.description || '', date: r.date || '', deadline: r.deadline || '',
       status: r.status || 'new', files: r.files || [],
@@ -1774,7 +2233,24 @@ async function initApp() {
       pricingComparison: r.pricing_comparison || null,
       contractorName: r.contractor_name || '',
     }));
+
+    // Merge: cloud is base, but keep any LOCAL-ONLY requests (not yet synced)
+    const cloudNums = new Set(cloudMapped.map(r => (r.num||'').trim().toLowerCase()));
+    const localOnly = localData.filter(r => !cloudNums.has((r.num||'').trim().toLowerCase()));
+
+    db = [...cloudMapped, ...localOnly];
     saveDb();
+
+    // Push local-only requests up to the cloud (they failed to sync before)
+    if (localOnly.length > 0) {
+      console.log('Syncing', localOnly.length, 'local-only requests to cloud...');
+      for (const r of localOnly) {
+        try { await syncToCloud(r); } catch(e) { console.error('sync fail:', r.num, e); }
+      }
+    }
+  } else {
+    // Cloud unreachable — fall back to local
+    db = localData;
   }
   renderTable();
   renderStats();
