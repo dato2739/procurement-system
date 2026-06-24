@@ -536,17 +536,40 @@ async function extractAndSavePrices(buffer, fileName, { projectName, contractor,
   return saved;
 }
 
+// ── GET /check-request-prices — რამდენი ფასი აქვს მოთხოვნას ──────
+app.get('/check-request-prices', async (req, res) => {
+  try {
+    const { requestId, num } = req.query;
+    let reqNum = num;
+    if (!reqNum && requestId) {
+      const row = await sbGetRequest(requestId);
+      reqNum = row ? (row.num || requestId) : requestId;
+    }
+    if (!reqNum) return res.json({ count: 0 });
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/unit_prices?request_id=eq.${encodeURIComponent(reqNum)}&select=id`,
+      { headers: { ...SB_H(), 'Prefer': 'count=exact', 'Range': '0-0' } }
+    );
+    const cr = r.headers.get('content-range') || '';
+    const total = parseInt((cr.split('/')[1] || '0'), 10) || 0;
+    res.json({ count: total, reqNum });
+  } catch (e) {
+    res.json({ count: 0 });
+  }
+});
+
 // ── POST /save-request-prices — მოთხოვნის ფასიანი XLS → unit_prices ──
-// დუბლის დაცვით: ჯერ ამოწმებს უკვე არსებობს თუ არა ამ მოთხოვნის ფასები
+// replace=true → ძველი ფასები წაიშლება და ახლით ჩაანაცვლებს
 app.post('/save-request-prices', async (req, res) => {
   try {
-    const { requestId } = req.body;
+    const { requestId, replace } = req.body;
     if (!requestId) return res.status(400).json({ error: 'requestId სავალდებულოა' });
 
     const row = await sbGetRequest(requestId);
     if (!row) return res.status(404).json({ error: 'მოთხოვნა ვერ მოიძებნა' });
 
     const reqNum = row.num || requestId;
+    const doReplace = replace === 'true' || replace === true;
 
     // Duplicate check — already have prices for this request?
     const existCheck = await fetch(
@@ -554,23 +577,39 @@ app.post('/save-request-prices', async (req, res) => {
       { headers: SB_H() }
     );
     const existing = await existCheck.json();
-    if (Array.isArray(existing) && existing.length > 0) {
+    const hasExisting = Array.isArray(existing) && existing.length > 0;
+
+    if (hasExisting && !doReplace) {
       return res.json({ ok: true, alreadyExists: true, pricesSaved: 0,
         message: 'ამ მოთხოვნის ფასები უკვე ბაზაშია' });
     }
 
-    // Find priced XLS files in the request
-    const xlsFiles = (row.files || []).filter(f => /\.(xls|xlsx)$/i.test(f.name));
-    if (!xlsFiles.length) return res.json({ ok: true, pricesSaved: 0, message: 'XLS ფაილი არ მოიძებნა' });
+    // Find XLS files — ჯერ requests.files, თუ ცარიელია — Storage-ის ფოლდერი
+    let files = (row.files || []);
+    if (!files.length) {
+      files = await sbStorageListFolder(requestId);
+      if (files.length) {
+        await sbSave({ id: requestId, num: reqNum, files, updated_at: new Date().toISOString() });
+      }
+    }
+    const xlsFiles = files.filter(f => /\.(xls|xlsx)$/i.test(f.name));
+    if (!xlsFiles.length) return res.json({ ok: true, pricesSaved: 0, noPricedXls: true, message: 'XLS ფაილი არ მოიძებნა' });
+
+    // replace → ჯერ ძველი ფასები წავშალოთ
+    if (doReplace && hasExisting) {
+      await fetch(
+        `${SUPABASE_URL}/rest/v1/unit_prices?request_id=eq.${encodeURIComponent(reqNum)}`,
+        { method: 'DELETE', headers: SB_H() }
+      );
+    }
 
     let totalSaved = 0;
     let pricedFound = false;
     for (const fm of xlsFiles) {
       const buf = await sbStorageDownload(fm.path);
       if (!buf) continue;
-      // Re-check this XLS has prices
       const parts = await processFile(buf, fm.name);
-      if (!parts._xlsHasPrices) continue;  // skip non-priced (ჩვენი ჩამონათვალი/დაზუსტება)
+      if (!parts._xlsHasPrices) continue;
       pricedFound = true;
       totalSaved += await extractAndSavePrices(buf, fm.name, {
         projectName: row.project || reqNum,
@@ -586,7 +625,7 @@ app.post('/save-request-prices', async (req, res) => {
         message: 'ფასიანი XLS (განფასება) ვერ მოიძებნა' });
     }
 
-    res.json({ ok: true, pricesSaved: totalSaved });
+    res.json({ ok: true, pricesSaved: totalSaved, replaced: doReplace && hasExisting });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });
