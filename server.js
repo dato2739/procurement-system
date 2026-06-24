@@ -695,6 +695,167 @@ app.post('/compare-pricing', upload.single('contractor_file'), async (req, res) 
   }
 });
 
+// ── GET /rebuild-list — დასაამუშავებელი მოთხოვნების სია ──────────
+app.get('/rebuild-list', async (req, res) => {
+  try {
+    if (!SUPABASE_URL || !SUPABASE_KEY) return res.status(500).json({ error: 'Supabase არ არის კონფიგურირებული' });
+    let requests = [];
+    let from = 0;
+    for (let i = 0; i < 20; i++) {
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/requests?select=id,num&order=created_at.desc`,
+        { headers: { ...SB_H(), 'Range-Unit': 'items', 'Range': `${from}-${from + 999}` } }
+      );
+      const batch = await r.json();
+      if (!Array.isArray(batch) || batch.length === 0) break;
+      requests = requests.concat(batch);
+      if (batch.length < 1000) break;
+      from += 1000;
+    }
+    res.json({ ok: true, requests: requests.map(r => ({ id: r.id, num: r.num })) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── POST /rebuild-one — ერთი მოთხოვნის ფასების აღდგენა ───────────
+// frontend ციკლში ერთ-ერთს უგზავნის — Render timeout-ის თავიდან აცილება
+app.post('/rebuild-one', async (req, res) => {
+  try {
+    const { requestId } = req.body;
+    if (!requestId) return res.status(400).json({ error: 'requestId სავალდებულოა' });
+
+    const row = await sbGetRequest(requestId);
+    if (!row) return res.json({ ok: true, num: requestId, status: 'not_found', pricesSaved: 0 });
+    const reqNum = row.num || requestId;
+
+    // უკვე აქვს ფასები?
+    const existCheck = await fetch(
+      `${SUPABASE_URL}/rest/v1/unit_prices?request_id=eq.${encodeURIComponent(reqNum)}&select=id&limit=1`,
+      { headers: SB_H() }
+    );
+    const existing = await existCheck.json();
+    if (Array.isArray(existing) && existing.length > 0) {
+      return res.json({ ok: true, num: reqNum, status: 'already_has', pricesSaved: 0 });
+    }
+
+    const files = (row.files) || [];
+    const xlsFiles = files.filter(f => /\.(xls|xlsx)$/i.test(f.name));
+    if (!xlsFiles.length) {
+      return res.json({ ok: true, num: reqNum, status: 'no_xls', pricesSaved: 0 });
+    }
+
+    let saved = 0;
+    let foundPriced = false;
+    for (const fm of xlsFiles) {
+      const buf = await sbStorageDownload(fm.path);
+      if (!buf) continue;
+      const parts = await processFile(buf, fm.name);
+      if (!parts._xlsHasPrices) continue;
+      foundPriced = true;
+      saved += await extractAndSavePrices(buf, fm.name, {
+        projectName: row.project || reqNum,
+        contractor: 'კონტრაქტორი',
+        requestNum: reqNum,
+        currency: '₾',
+        date: row.date || new Date().toISOString().slice(0, 10)
+      });
+    }
+
+    res.json({ ok: true, num: reqNum,
+      status: foundPriced ? (saved > 0 ? 'done' : 'no_price_extracted') : 'no_priced_xls',
+      pricesSaved: saved });
+  } catch (e) {
+    res.status(500).json({ error: e.message, num: req.body.requestId });
+  }
+});
+
+// ── POST /rebuild-prices — ფასების ბაზის თავიდან აგება ────────────
+// ყველა მოთხოვნის Storage-ის ფაილებიდან ფასიან XLS-ებს პოულობს და
+// ფასებს თავიდან ამოიღებს. გამოიყენება მონაცემთა აღდგენისთვის.
+app.post('/rebuild-prices', async (req, res) => {
+  try {
+    if (!SUPABASE_URL || !SUPABASE_KEY) return res.status(500).json({ error: 'Supabase არ არის კონფიგურირებული' });
+
+    // 1. ყველა მოთხოვნის წამოღება (პაგინაციით)
+    let requests = [];
+    let from = 0;
+    for (let i = 0; i < 20; i++) {
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/requests?select=id,num,project,date&order=created_at.desc`,
+        { headers: { ...SB_H(), 'Range-Unit': 'items', 'Range': `${from}-${from + 999}` } }
+      );
+      const batch = await r.json();
+      if (!Array.isArray(batch) || batch.length === 0) break;
+      requests = requests.concat(batch);
+      if (batch.length < 1000) break;
+      from += 1000;
+    }
+
+    const summary = { totalRequests: requests.length, processed: 0, withPrices: 0, pricesSaved: 0, skipped: [], errors: [] };
+
+    // 2. თითო მოთხოვნა — ფასიანი XLS იპოვე და ფასები ამოიღე
+    for (const row of requests) {
+      summary.processed++;
+      const reqNum = row.num || row.id;
+
+      try {
+        // უკვე აქვს ფასები? (გამოტოვე, რომ დუბლი არ შეიქმნას)
+        const existCheck = await fetch(
+          `${SUPABASE_URL}/rest/v1/unit_prices?request_id=eq.${encodeURIComponent(reqNum)}&select=id&limit=1`,
+          { headers: SB_H() }
+        );
+        const existing = await existCheck.json();
+        if (Array.isArray(existing) && existing.length > 0) {
+          summary.skipped.push({ num: reqNum, reason: 'უკვე აქვს ფასები' });
+          continue;
+        }
+
+        // ფაილების სია
+        const full = await sbGetRequest(row.id);
+        const files = (full && full.files) || [];
+        const xlsFiles = files.filter(f => /\.(xls|xlsx)$/i.test(f.name));
+        if (!xlsFiles.length) {
+          summary.skipped.push({ num: reqNum, reason: 'XLS არ აქვს' });
+          continue;
+        }
+
+        // ფასიანი XLS-ები იპოვე და ფასები ამოიღე
+        let savedForThis = 0;
+        let foundPriced = false;
+        for (const fm of xlsFiles) {
+          const buf = await sbStorageDownload(fm.path);
+          if (!buf) continue;
+          const parts = await processFile(buf, fm.name);
+          if (!parts._xlsHasPrices) continue;  // სპეციფიკაცია — გამოტოვე
+          foundPriced = true;
+          savedForThis += await extractAndSavePrices(buf, fm.name, {
+            projectName: row.project || reqNum,
+            contractor: 'კონტრაქტორი',
+            requestNum: reqNum,
+            currency: '₾',
+            date: row.date || new Date().toISOString().slice(0, 10)
+          });
+        }
+
+        if (foundPriced && savedForThis > 0) {
+          summary.withPrices++;
+          summary.pricesSaved += savedForThis;
+        } else {
+          summary.skipped.push({ num: reqNum, reason: foundPriced ? 'ფასი ვერ ამოვიდა' : 'ფასიანი XLS არ აქვს' });
+        }
+      } catch (e) {
+        summary.errors.push({ num: reqNum, error: e.message });
+      }
+    }
+
+    res.json({ ok: true, ...summary });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /prices — ფასების ბაზის წამოღება ────────────────────────
 app.get('/prices', async (req, res) => {
   try {
