@@ -110,6 +110,24 @@ async function sbStorageDeleteFolder(prefix) {
   } catch(e) { console.error('Storage delete error:', e.message); return false; }
 }
 
+// ფოლდერის ფაილების ჩამოთვლა (სახელი + სრული path)
+async function sbStorageListFolder(prefix) {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return [];
+  try {
+    const listRes = await fetch(`${SUPABASE_URL}/storage/v1/object/list/${BUCKET}`, {
+      method: 'POST',
+      headers: { ...SB_H(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prefix: prefix + '/', limit: 200 })
+    });
+    const items = await listRes.json();
+    if (!Array.isArray(items)) return [];
+    // მხოლოდ ფაილები — გაფართოების მიხედვით (ფოლდერებს გაფართოება არ აქვს)
+    return items
+      .filter(it => it.name && /\.(xls|xlsx|pdf|doc|docx)$/i.test(it.name))
+      .map(it => ({ name: it.name, path: `${prefix}/${it.name}` }));
+  } catch(e) { console.error('Storage list error:', e.message); return []; }
+}
+
 // ── File processing → msgContent parts ──────────────────────────
 async function processFile(buffer, originalname) {
   const parts = [];
@@ -739,7 +757,17 @@ app.post('/rebuild-one', async (req, res) => {
       return res.json({ ok: true, num: reqNum, status: 'already_has', pricesSaved: 0 });
     }
 
-    const files = (row.files) || [];
+    // ფაილების წყარო: ჯერ requests.files, თუ ცარიელია — Storage-ის ფოლდერი
+    let files = (row.files) || [];
+    if (!files.length) {
+      // Storage-ის ფოლდერი = requestId (req_...)
+      files = await sbStorageListFolder(requestId);
+      // აღვადგინოთ paths ბაზაში, რომ მომავალში დეტალებშიც ჩანდეს
+      if (files.length) {
+        await sbSave({ id: requestId, num: reqNum, files, updated_at: new Date().toISOString() });
+      }
+    }
+
     const xlsFiles = files.filter(f => /\.(xls|xlsx)$/i.test(f.name));
     if (!xlsFiles.length) {
       return res.json({ ok: true, num: reqNum, status: 'no_xls', pricesSaved: 0 });
