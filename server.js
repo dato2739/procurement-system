@@ -653,7 +653,7 @@ app.get('/check-request-prices', async (req, res) => {
 // replace=true → ძველი ფასები წაიშლება და ახლით ჩაანაცვლებს
 app.post('/save-request-prices', async (req, res) => {
   try {
-    const { requestId, replace } = req.body;
+    const { requestId, replace, contractor: contractorParam } = req.body;
     if (!requestId) return res.status(400).json({ error: 'requestId სავალდებულოა' });
 
     const row = await sbGetRequest(requestId);
@@ -704,7 +704,7 @@ app.post('/save-request-prices', async (req, res) => {
       pricedFound = true;
       totalSaved += await extractAndSavePrices(buf, fm.name, {
         projectName: row.project || reqNum,
-        contractor: row.contractor_name || 'კონტრაქტორი',
+        contractor: contractorParam || row.contractor_name || 'კონტრაქტორი',
         requestNum: reqNum,
         currency: '₾',
         date: row.date || new Date().toISOString().slice(0, 10)
