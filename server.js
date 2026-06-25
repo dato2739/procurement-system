@@ -502,11 +502,11 @@ async function callAIWithTokens(system, messages, maxTokens) {
 // If direct parse yields <3 items, fall back to AI.
 async function extractAndSavePrices(buffer, fileName, { projectName, contractor, requestNum, currency, date }) {
   const XLSX = require('xlsx');
-  const priceHeaderRe = /ერთეულის.*(ღირ|ფას)|unit.*(cost|price)|ფასი|ღირებ/i;
-  const totalHeaderRe = /სულ.*ლარ|total.*gel/i;
-  const nameHeaderRe  = /სამუშაოების.დასახელება|დასახელება|სამუშაო/i;  // Georgian name col preferred over English
+  const priceHeaderRe = /ერთ[\s\S]{0,10}(ფას|price)|unit[\s\S]{0,5}price|ერთეულის.*(ღირ|ფას)/i;
+  const totalHeaderRe = /სულ.*ლარ|total.*gel|სულ[\s\S]{0,5}ღირ/i;
+  const nameHeaderRe  = /სამუშაოების.დასახელება|დასახელება|სამუშაო/i;
   const qtyHeaderRe   = /რაოდენ|quantity|number/i;
-  const unitHeaderRe  = /განზომ|dimension|unit$/i;
+  const unitHeaderRe  = /განზომ|^განზ|dimension|^unit$/i;
 
   let directItems = [];
   let text = '';
@@ -524,9 +524,9 @@ async function extractAndSavePrices(buffer, fileName, { projectName, contractor,
         let found = false;
         r.forEach((h, ci) => {
           const s = String(h);
-          if (priceHeaderRe.test(s)) { unitPriceCol = ci; found = true; }
+          if (priceHeaderRe.test(s) && unitPriceCol < 0) { unitPriceCol = ci; found = true; }
           if (totalHeaderRe.test(s))  { totalCol = ci; found = true; }
-          if (nameHeaderRe.test(s) && nameCol < 0) { nameCol = ci; }
+          if (nameHeaderRe.test(s) && nameCol < 0 && s.length < 35) { nameCol = ci; }
           if (qtyHeaderRe.test(s))    { qtyCol = ci; }
           if (unitHeaderRe.test(s) && unitCol < 0) { unitCol = ci; }
         });
@@ -1191,6 +1191,88 @@ app.post('/import-prices', upload.array('files', 50), async (req, res) => {
 
   } catch (e) {
     console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
+// ── GET /backup — სრული ბექაპი: requests + unit_prices + ყველა ფაილი ──
+app.get('/backup', async (req, res) => {
+  try {
+    // 1. requests ცხრილი (paginated)
+    let allRequests = [];
+    let from = 0;
+    const PAGE = 1000;
+    while (true) {
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/requests?select=*&order=created_at.asc&offset=${from}&limit=${PAGE}`,
+        { headers: SB_H() }
+      );
+      const rows = await r.json();
+      if (!Array.isArray(rows) || rows.length === 0) break;
+      allRequests.push(...rows);
+      if (rows.length < PAGE) break;
+      from += PAGE;
+    }
+
+    // 2. unit_prices ცხრილი (paginated)
+    let allPrices = [];
+    from = 0;
+    while (true) {
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/unit_prices?select=*&order=created_at.asc&offset=${from}&limit=${PAGE}`,
+        { headers: SB_H() }
+      );
+      const rows = await r.json();
+      if (!Array.isArray(rows) || rows.length === 0) break;
+      allPrices.push(...rows);
+      if (rows.length < PAGE) break;
+      from += PAGE;
+    }
+
+    // 3. Storage ფაილების სია — ყველა request-ის ფოლდერი
+    const fileList = []; // { requestId, name, path }
+    for (const req of allRequests) {
+      const files = (req.files || []);
+      for (const f of files) {
+        if (f.path) fileList.push({ requestId: req.id, name: f.name, path: f.path, size: f.size || 0 });
+      }
+    }
+
+    // 4. ფაილების ბუფერები + ZIP-ი archiver-ის გარეშე (JSZip)
+    // ვიყენებთ მარტივ multipart-ის ნაცვლად — ვაბრუნებთ JSON manifest + ცალ-ცალკე /backup-file endpoint-ს
+    // რადგან ZIP სერვერზე მეხსიერებას ჭამს, ვაბრუნებთ manifest-ს და კლიენტი თვითონ ატარებს ფაილებს
+
+    res.json({
+      ok: true,
+      ts: new Date().toISOString(),
+      requests:    allRequests,
+      unit_prices: allPrices,
+      files:       fileList,
+      stats: {
+        requestCount:   allRequests.length,
+        priceCount:     allPrices.length,
+        fileCount:      fileList.length,
+      }
+    });
+  } catch (e) {
+    console.error('backup error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /backup-file — ერთი ფაილის ჩამოტვირთვა ბექაპისთვის ──
+app.get('/backup-file', async (req, res) => {
+  try {
+    const path = req.query.path;
+    if (!path) return res.status(400).json({ error: 'path required' });
+    const buf = await sbStorageDownload(path);
+    if (!buf) return res.status(404).json({ error: 'not found' });
+    const filename = path.split('/').pop();
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+    res.send(buf);
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
