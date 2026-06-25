@@ -1196,6 +1196,114 @@ app.post('/import-prices', upload.array('files', 50), async (req, res) => {
 });
 
 
+
+// ── analysis_chats — CRUD ────────────────────────────────────────
+
+// ჩატის შენახვა / განახლება
+app.post('/chat-save', async (req, res) => {
+  try {
+    const { id, request_id, request_num, title, messages } = req.body;
+    if (!id || !request_id) return res.status(400).json({ error: 'id და request_id სავალდებულოა' });
+    const check = await fetch(`${SUPABASE_URL}/rest/v1/analysis_chats?id=eq.${id}&select=id`, { headers: SB_H() });
+    const exists = await check.json();
+    const payload = { id, request_id, request_num: request_num || '', title: title || '', messages: messages || [], updated_at: new Date().toISOString() };
+    if (exists.length > 0) {
+      await fetch(`${SUPABASE_URL}/rest/v1/analysis_chats?id=eq.${id}`,
+        { method: 'PATCH', headers: { ...SB_H(), 'Prefer': 'return=minimal' }, body: JSON.stringify(payload) });
+    } else {
+      payload.created_at = new Date().toISOString();
+      await fetch(`${SUPABASE_URL}/rest/v1/analysis_chats`,
+        { method: 'POST', headers: { ...SB_H(), 'Prefer': 'return=minimal' }, body: JSON.stringify(payload) });
+    }
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// მოთხოვნის ყველა ჩატი
+app.get('/chats/:requestId', async (req, res) => {
+  try {
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/analysis_chats?request_id=eq.${req.params.requestId}&order=updated_at.desc&select=id,request_id,request_num,title,updated_at,created_at`,
+      { headers: SB_H() }
+    );
+    res.json(await r.json());
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ერთი ჩატის სრული შინაარსი (messages-ით)
+app.get('/chat/:chatId', async (req, res) => {
+  try {
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/analysis_chats?id=eq.${req.params.chatId}&select=*`,
+      { headers: SB_H() }
+    );
+    const rows = await r.json();
+    res.json(rows[0] || null);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ჩატის წაშლა
+app.delete('/chat/:chatId', async (req, res) => {
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/analysis_chats?id=eq.${req.params.chatId}`,
+      { method: 'DELETE', headers: SB_H() });
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── analysis_summaries — CRUD ────────────────────────────────────
+
+// თეზისების შენახვა (AI-ით გენერაცია + save)
+app.post('/summary-save', async (req, res) => {
+  try {
+    const { request_id, request_num, chat_id, messages } = req.body;
+    if (!request_id || !messages) return res.status(400).json({ error: 'request_id და messages სავალდებულოა' });
+
+    // AI-ით ძირითადი თეზისების ამოღება
+    const chatText = messages.map(m => `${m.role === 'user' ? 'კითხვა' : 'პასუხი'}: ${m.text}`).join('\n\n');
+    const prompt = `ეს არის AI ტექნიკური ანალიზის ჩატი:\n\n${chatText.slice(0, 12000)}\n\n` +
+      `ამოიღე:\n1. მოკლე დასკვნა (2-3 წინადადება)\n2. ძირითადი თეზისები (მაქს 7, თითო — ერთი წინადადება)\n\n` +
+      `გიპასუხე მხოლოდ JSON-ში:\n{"summary_text":"...","key_points":["...","..."]}`;
+
+    const raw = await callAI('შენ ხარ ტექნიკური ექსპერტი. მხოლოდ JSON.',
+      [{ role: 'user', content: prompt }]);
+    
+    let summary_text = '', key_points = [];
+    try {
+      const parsed = JSON.parse(raw.replace(/```json|```/g,'').trim());
+      summary_text = parsed.summary_text || '';
+      key_points   = parsed.key_points   || [];
+    } catch(e) { summary_text = raw.slice(0, 500); }
+
+    const id = 'sum_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
+    await fetch(`${SUPABASE_URL}/rest/v1/analysis_summaries`,
+      { method: 'POST', headers: { ...SB_H(), 'Prefer': 'return=minimal' },
+        body: JSON.stringify({ id, request_id, request_num: request_num || '', chat_id: chat_id || null, summary_text, key_points, created_at: new Date().toISOString() }) });
+
+    res.json({ ok: true, id, summary_text, key_points });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// მოთხოვნის ყველა summary
+app.get('/summaries/:requestId', async (req, res) => {
+  try {
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/analysis_summaries?request_id=eq.${req.params.requestId}&order=created_at.desc&select=*`,
+      { headers: SB_H() }
+    );
+    res.json(await r.json());
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// summary-ს წაშლა
+app.delete('/summary/:sumId', async (req, res) => {
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/analysis_summaries?id=eq.${req.params.sumId}`,
+      { method: 'DELETE', headers: SB_H() });
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── GET /backup — სრული ბექაპი: requests + unit_prices + ყველა ფაილი ──
 app.get('/backup', async (req, res) => {
   try {
@@ -1230,6 +1338,36 @@ app.get('/backup', async (req, res) => {
       from += PAGE;
     }
 
+    // 3. analysis_chats (paginated)
+    let allChats = [];
+    from = 0;
+    while (true) {
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/analysis_chats?select=*&order=created_at.asc&offset=${from}&limit=${PAGE}`,
+        { headers: SB_H() }
+      );
+      const rows = await r.json();
+      if (!Array.isArray(rows) || rows.length === 0) break;
+      allChats.push(...rows);
+      if (rows.length < PAGE) break;
+      from += PAGE;
+    }
+
+    // 4. analysis_summaries (paginated)
+    let allSummaries = [];
+    from = 0;
+    while (true) {
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/analysis_summaries?select=*&order=created_at.asc&offset=${from}&limit=${PAGE}`,
+        { headers: SB_H() }
+      );
+      const rows = await r.json();
+      if (!Array.isArray(rows) || rows.length === 0) break;
+      allSummaries.push(...rows);
+      if (rows.length < PAGE) break;
+      from += PAGE;
+    }
+
     // 3. Storage ფაილების სია — ყველა request-ის ფოლდერი
     const fileList = []; // { requestId, name, path }
     for (const req of allRequests) {
@@ -1246,12 +1384,16 @@ app.get('/backup', async (req, res) => {
     res.json({
       ok: true,
       ts: new Date().toISOString(),
-      requests:    allRequests,
-      unit_prices: allPrices,
-      files:       fileList,
+      requests:           allRequests,
+      unit_prices:        allPrices,
+      analysis_chats:     allChats,
+      analysis_summaries: allSummaries,
+      files:              fileList,
       stats: {
         requestCount:   allRequests.length,
         priceCount:     allPrices.length,
+        chatCount:      allChats.length,
+        summaryCount:   allSummaries.length,
         fileCount:      fileList.length,
       }
     });
