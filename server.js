@@ -498,21 +498,79 @@ async function callAIWithTokens(system, messages, maxTokens) {
 
 // Extract prices from a priced XLS buffer and save to unit_prices.
 // Returns number of saved positions.
+// Strategy: first try direct parse (fast, no AI needed).
+// If direct parse yields <3 items, fall back to AI.
 async function extractAndSavePrices(buffer, fileName, { projectName, contractor, requestNum, currency, date }) {
   const XLSX = require('xlsx');
+  const priceHeaderRe = /ერთეულის.*(ღირ|ფას)|unit.*(cost|price)|ფასი|ღირებ/i;
+  const totalHeaderRe = /სულ.*ლარ|total.*gel/i;
+  const nameHeaderRe  = /სამუშაოების.დასახელება|დასახელება|სამუშაო/i;  // Georgian name col preferred over English
+  const qtyHeaderRe   = /რაოდენ|quantity|number/i;
+  const unitHeaderRe  = /განზომ|dimension|unit$/i;
+
+  let directItems = [];
   let text = '';
+
   try {
     const wb = XLSX.read(buffer, { type: 'buffer' });
-    wb.SheetNames.forEach(name => {
-      const ws = wb.Sheets[name];
+    for (const sheetName of wb.SheetNames) {
+      const ws   = wb.Sheets[sheetName];
       const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-      text += `=== ${name} ===\n`;
+
+      // Find header row
+      let headerIdx = -1, nameCol = -1, unitPriceCol = -1, totalCol = -1, qtyCol = -1, unitCol = -1;
+      for (let i = 0; i < Math.min(rows.length, 10); i++) {
+        const r = rows[i];
+        let found = false;
+        r.forEach((h, ci) => {
+          const s = String(h);
+          if (priceHeaderRe.test(s)) { unitPriceCol = ci; found = true; }
+          if (totalHeaderRe.test(s))  { totalCol = ci; found = true; }
+          if (nameHeaderRe.test(s) && nameCol < 0) { nameCol = ci; }
+          if (qtyHeaderRe.test(s))    { qtyCol = ci; }
+          if (unitHeaderRe.test(s) && unitCol < 0) { unitCol = ci; }
+        });
+        if (found) { headerIdx = i; break; }
+      }
+
+      if (headerIdx >= 0 && nameCol >= 0 && (unitPriceCol >= 0 || totalCol >= 0)) {
+        for (let i = headerIdx + 1; i < rows.length; i++) {
+          const r = rows[i];
+          const name = String(r[nameCol] || '').trim();
+          if (!name || /^\d+\./.test(name) && name.length < 5) continue; // section headers like "1."
+
+          let unit_price = 0;
+          if (unitPriceCol >= 0) {
+            unit_price = parseFloat(String(r[unitPriceCol]).replace(/[,\s]/g, '')) || 0;
+          }
+          // If no unit price but have total+qty, compute
+          if (unit_price <= 0 && totalCol >= 0 && qtyCol >= 0) {
+            const total = parseFloat(String(r[totalCol]).replace(/[,\s]/g, '')) || 0;
+            const qty   = parseFloat(String(r[qtyCol]).replace(/[,\s]/g, '')) || 0;
+            if (qty > 0) unit_price = parseFloat((total / qty).toFixed(4));
+          }
+          if (unit_price <= 0) continue;
+
+          const qty  = qtyCol >= 0 ? parseFloat(String(r[qtyCol]).replace(/[,\s]/g, '')) || 0 : 0;
+          const unit = unitCol >= 0 ? String(r[unitCol] || '').trim() : '';
+          if (name.length >= 3 && isNaN(parseFloat(name)))
+            directItems.push({ work_name: name, quantity: qty, unit, unit_price });
+        }
+      }
+
+      // Also build text for AI fallback
+      text += `=== ${sheetName} ===\n`;
       rows.filter(r => r.some(c => c !== '')).slice(0, 200).forEach(row => {
         text += row.map(c => String(c)).join('\t') + '\n';
       });
-    });
+    }
   } catch (e) { console.error('xls read:', e.message); return 0; }
 
+  // Use direct items if we got enough
+  let items = directItems.length >= 3 ? directItems : [];
+
+  if (items.length < 3) {
+    // Fall back to AI
   const prompt =
     `ეს არის სამშენებლო/ელ-ტექნიკური სამუშაოების განფასების XLS ფაილი:\n${text.slice(0, 16000)}\n\n` +
     `**ყურადღება:** ცხრილის სათაური (header) შესაძლოა არ იყოს პირველ რიგში — ხშირად პირველი 1-3 რიგი არის ` +
@@ -539,6 +597,8 @@ async function extractAndSavePrices(buffer, fileName, { projectName, contractor,
     const match = cleaned.match(/\[[\s\S]*\]/);
     if (match) items = JSON.parse(match[0]);
   } catch (e) { console.error('price JSON parse:', fileName, e.message); }
+
+  } // end AI fallback
 
   let saved = 0;
   const cur = currency || '₾';
