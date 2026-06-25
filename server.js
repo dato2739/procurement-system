@@ -194,7 +194,7 @@ async function processFile(buffer, originalname) {
     const wb   = XLSX.read(buffer, { type: 'buffer' });
     let text   = '';
     let hasPrices = false;
-    const priceRe = /ფას|ღირ|price|unit.?price|цена|стоим|ერთეულის/i;
+    const priceRe = /ფას|ღირ|price|unit.?price|цена|стоим|ერთეულის|სულ.*ლარ|total.*gel|gel|lari/i;
     wb.SheetNames.forEach(name => {
       const ws   = wb.Sheets[name];
       const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
@@ -520,7 +520,7 @@ async function extractAndSavePrices(buffer, fileName, { projectName, contractor,
     `ერთეულის ღირებულება/ფასი, სულ) უფრო ქვემოთ მოდის. იპოვე ფასების სვეტი ("ერთეულის ღირებულება", ` +
     `"unit price", "ფასი") და ამოიღე ფასიანი პოზიციები.\n\n` +
     `ამოიღე მხოლოდ ის პოზიციები, რომლებსაც აქვთ შევსებული **ერთეულის** ფასი (>0). ` +
-    `(გაითვალისწინე: "ერთეულის ღირებულება" = unit price, "სულ/Total" = ჯამური — გვინდა ერთეულის ფასი, არა ჯამი).\n` +
+    `(გაითვალისწინე: "ერთეულის ღირებულება" = unit price, "სულ/Total" = ჯამური — გამოთვალე unit_price = სულ ÷ რაოდ, თუ unit price სვეტი არ არის. თუ რაოდ=0 — გამოტოვე.\n` +
     `გიპასუხე მხოლოდ JSON მასივით, სხვა ტექსტის გარეშე:\n` +
     `[{"work_name":"სამუშოს სახელი","quantity":0,"unit":"ერთ.","unit_price":0}]\n` +
     `- work_name: სამუშაოს დასახელება (ქართულად)\n` +
