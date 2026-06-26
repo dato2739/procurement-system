@@ -614,7 +614,10 @@ async function extractAndSavePrices(buffer, fileName, { projectName, contractor,
   const raw = await callAIWithTokens('შენ ხარ ფინანსური ექსპერტი. XLS-დან ფასების ამოღება. მხოლოდ JSON მასივი.',
     [{ role: 'user', content: prompt }], 8192);
 
-  let items = [];
+  // ⚠️ FIX: აქ ადრე იყო `let items = []` — ეს ბლოკ-სკოპში ახალ ცვლადს ქმნიდა და
+  // გარე items-ს ჩრდილავდა (shadowing). შედეგად AI fallback-ით ამოღებული ფასები
+  // იკარგებოდა (SKADA_chkoni.XLSX-ის case). ახლა გარე items-ში ვწერთ.
+  items = [];
   try {
     const cleaned = raw.replace(/```json|```/g, '').trim();
     const match = cleaned.match(/\[[\s\S]*\]/);
