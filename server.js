@@ -806,32 +806,7 @@ app.post('/compare-pricing', upload.single('contractor_file'), async (req, res) 
       .replace(/```[\s\S]*?```/g, '')
       .trim();
 
-    // Save prices to unit_prices (Stage C data)
-    const cur = currency || '₾';
-    const dt = pricingDate || new Date().toISOString().split('T')[0];
-    let savedCount = 0;
-    for (const item of priceItems) {
-      if (!item.work_name || item.unit_price == null) continue;
-      const r2 = await fetch(`${SUPABASE_URL}/rest/v1/unit_prices`, {
-        method: 'POST',
-        headers: { ...SB_H(), 'Prefer': 'return=minimal' },
-        body: JSON.stringify({
-          id: 'up_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
-          project_name: row.project || '',
-          contractor:   cname,
-          work_name:    item.work_name,
-          quantity:     item.quantity || 0,
-          unit:         item.unit || '',
-          unit_price:   item.unit_price || 0,
-          currency:     cur,
-          date:         dt,
-          request_id:   requestId
-        })
-      });
-      if (r2.ok) savedCount++;
-    }
-
-    // Save comparison result to request row
+    // შეუსაბამობების შედეგი ვაბრუნებთ — ფასების შენახვა ხდება მხოლოდ კლიენტის მოთხოვნით (/pricing-save)
     await sbSave({
       id: requestId,
       pricing_comparison: summary,
@@ -839,7 +814,7 @@ app.post('/compare-pricing', upload.single('contractor_file'), async (req, res) 
       updated_at: new Date().toISOString()
     });
 
-    res.json({ ok: true, summary, pricesSaved: savedCount });
+    res.json({ ok: true, summary, priceItems });
 
   } catch (e) {
     console.error(e);
@@ -1197,6 +1172,106 @@ app.post('/import-prices', upload.array('files', 50), async (req, res) => {
 
 
 
+
+// ══════════════════════════════════════════════════════════════════
+// CONTRACTORS
+// ══════════════════════════════════════════════════════════════════
+
+// ყველა კონტრაქტორი
+app.get('/contractors', async (req, res) => {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/contractors?select=*&order=name.asc`, { headers: SB_H() });
+    res.json(await r.json());
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// კონტრაქტორის დამატება
+app.post('/contractors', async (req, res) => {
+  try {
+    const { name, tax_id, email, phone } = req.body;
+    if (!name) return res.status(400).json({ error: 'სახელი სავალდებულოა' });
+    const id = 'ctr_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/contractors`,
+      { method: 'POST', headers: { ...SB_H(), 'Prefer': 'return=representation' },
+        body: JSON.stringify({ id, name: name.trim(), tax_id: tax_id||'', email: email||'', phone: phone||'', created_at: new Date().toISOString() }) });
+    const data = await r.json();
+    res.json({ ok: true, contractor: Array.isArray(data) ? data[0] : data });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// კონტრაქტორის განახლება
+app.patch('/contractors/:id', async (req, res) => {
+  try {
+    const { name, tax_id, email, phone } = req.body;
+    await fetch(`${SUPABASE_URL}/rest/v1/contractors?id=eq.${req.params.id}`,
+      { method: 'PATCH', headers: { ...SB_H(), 'Prefer': 'return=minimal' },
+        body: JSON.stringify({ name, tax_id, email, phone }) });
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// კონტრაქტორის წაშლა
+app.delete('/contractors/:id', async (req, res) => {
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/contractors?id=eq.${req.params.id}`,
+      { method: 'DELETE', headers: SB_H() });
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+// Excel-იდან bulk import
+app.post('/contractors/import', upload.single('file'), async (req, res) => {
+  try {
+    const XLSX = require('xlsx');
+    const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+
+    // header row პოვნა
+    let headerIdx = 0;
+    const nameRe  = /company|name|სახელ/i;
+    const taxRe   = /id|საიდ|tax/i;
+    const emailRe = /email|მეილ/i;
+    const phoneRe = /tel|phone|ტელ/i;
+    let nameCol=0, taxCol=1, emailCol=2, phoneCol=3;
+
+    for (let i = 0; i < Math.min(rows.length, 5); i++) {
+      const r = rows[i];
+      let found = false;
+      r.forEach((h, ci) => {
+        const s = String(h);
+        if (nameRe.test(s))  { nameCol  = ci; found = true; }
+        if (taxRe.test(s))   { taxCol   = ci; }
+        if (emailRe.test(s)) { emailCol = ci; }
+        if (phoneRe.test(s)) { phoneCol = ci; }
+      });
+      if (found) { headerIdx = i; break; }
+    }
+
+    let saved = 0, skipped = 0;
+    for (const row of rows.slice(headerIdx + 1)) {
+      const name = String(row[nameCol] || '').trim();
+      if (!name || name.length < 2) { skipped++; continue; }
+      const tax_id = String(row[taxCol]  || '').trim();
+      const email  = String(row[emailCol]|| '').trim();
+      const phone  = String(row[phoneCol]|| '').trim();
+
+      // duplicate check by tax_id or name
+      const checkField = tax_id ? `tax_id=eq.${encodeURIComponent(tax_id)}` : `name=eq.${encodeURIComponent(name)}`;
+      const chk = await fetch(`${SUPABASE_URL}/rest/v1/contractors?${checkField}&select=id`, { headers: SB_H() });
+      const exists = await chk.json();
+      if (exists.length > 0) { skipped++; continue; }
+
+      const id = 'ctr_' + Date.now() + '_' + Math.random().toString(36).slice(2,6);
+      await fetch(`${SUPABASE_URL}/rest/v1/contractors`,
+        { method: 'POST', headers: { ...SB_H(), 'Prefer': 'return=minimal' },
+          body: JSON.stringify({ id, name, tax_id, email, phone, created_at: new Date().toISOString() }) });
+      saved++;
+    }
+    res.json({ ok: true, saved, skipped });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── analysis_chats — CRUD ────────────────────────────────────────
 
 // ჩატის შენახვა / განახლება
@@ -1301,6 +1376,48 @@ app.delete('/summary/:sumId', async (req, res) => {
     await fetch(`${SUPABASE_URL}/rest/v1/analysis_summaries?id=eq.${req.params.sumId}`,
       { method: 'DELETE', headers: SB_H() });
     res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
+
+// ── POST /pricing-save — ფასების ხელით შენახვა შედარების შემდეგ ──
+app.post('/pricing-save', async (req, res) => {
+  try {
+    const { requestId, contractorId, contractorName, priceItems, currency, pricingDate, filePath } = req.body;
+    if (!requestId || !priceItems) return res.status(400).json({ error: 'requestId და priceItems სავალდებულოა' });
+
+    const row = await sbGetRequest(requestId);
+    if (!row) return res.status(404).json({ error: 'მოთხოვნა ვერ მოიძებნა' });
+
+    const cur = currency || '₾';
+    const dt  = pricingDate || new Date().toISOString().slice(0,10);
+    const cname = contractorName || 'კონტრაქტორი';
+    let saved = 0;
+
+    for (const item of priceItems) {
+      if (!item.work_name || !item.unit_price) continue;
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/unit_prices`, {
+        method: 'POST',
+        headers: { ...SB_H(), 'Prefer': 'return=minimal' },
+        body: JSON.stringify({
+          id:           'up_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
+          project_name: row.project || row.num || '',
+          request_num:  row.num || '',
+          contractor:   cname,
+          contractor_id: contractorId || null,
+          work_name:    item.work_name,
+          quantity:     parseFloat(item.quantity) || 0,
+          unit:         item.unit || '',
+          unit_price:   parseFloat(item.unit_price) || 0,
+          currency:     cur,
+          date:         dt,
+          request_id:   requestId
+        })
+      });
+      if (r.ok || r.status === 201) saved++;
+    }
+
+    res.json({ ok: true, saved });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
