@@ -736,9 +736,7 @@ app.post('/compare-pricing', upload.single('contractor_file'), async (req, res) 
     if (!row) return res.status(404).json({ error: 'მოთხოვნა ვერ მოიძებნა' });
 
     const ourFiles = (row.files || []).filter(f => /\.(xls|xlsx)$/i.test(f.name));
-    if (!ourFiles.length) {
-      return res.status(400).json({ error: 'მოთხოვნაში XLS/XLSX ვერ მოიძებნა — ჯერ ეტაპ A ჩატარდეს' });
-    }
+    const hasOurXls = ourFiles.length > 0;
 
     const XLSX = require('xlsx');
     const xlsText = (buf) => {
@@ -755,10 +753,6 @@ app.post('/compare-pricing', upload.single('contractor_file'), async (req, res) 
       return t.slice(0, 9000);
     };
 
-    const ourBuf = await sbStorageDownload(ourFiles[0].path);
-    if (!ourBuf) return res.status(500).json({ error: 'XLS ვერ ჩამოიტვირთა Storage-დან' });
-
-    const ourText  = xlsText(ourBuf);
     const contrText = xlsText(cf.buffer);
 
     // Upload contractor file to storage
@@ -766,24 +760,45 @@ app.post('/compare-pricing', upload.single('contractor_file'), async (req, res) 
     await sbStorageUpload(cfPath, cf.buffer, contentTypeFor(cf.originalname));
 
     const cname = contractorName || 'კონტრაქტორი';
-    const prompt =
-      `შეადარე ორი XLS ფაილი:\n\n` +
-      `=== ჩვენი სამუშაოთა ჩამონათვალი ===\n${ourText}\n\n` +
-      `=== კონტრაქტორის (${cname}) განფასება ===\n${contrText}\n\n` +
-      `გამოავლინე შეუსაბამობები. დასახელებების დასაბმელად — ჭკვიანი matching ` +
-      `(case-insensitive, სინონიმები, მოქნილი ფორმულირება). ` +
-      `მხოლოდ მნიშვნელოვანი სხვაობები (>5% ან სრულად გამოტოვებული).\n\n` +
-      `უპასუხე ამ სტრუქტურით (Markdown):\n\n` +
-      `## ფასობრივი შეუსაბამობები\n` +
-      `| სამუშაო | ჩვენი ერთ.ფასი | კონტ. ერთ.ფასი | სხვაობა | % |\n|---|---|---|---|---|\n\n` +
-      `## გამოტოვებული პოზიციები (ჩვენთან → კონტრაქტორთან არა)\n- ...\n\n` +
-      `## ზედმეტი პოზიციები (კონტრაქტორთან → ჩვენთან არა)\n- ...\n\n` +
-      `## დასკვნა\n2-3 წინადადება: ჯამური სხვაობა, მთავარი რისკები.\n\n` +
-      `ბოლოს, მხოლოდ ერთი JSON მასივი (სხვა ტექსტის გარეშე), ზუსტად ამ ფორმატით:\n` +
-      `---JSON_PRICES---\n` +
-      `[{"work_name":"სამუშაოს სახელი","quantity":10,"unit":"მ²","unit_price":50.0}]\n` +
-      `---JSON_END---\n` +
-      `(მხოლოდ კონტ. პოზიციები, რომლებიც ჩვენს ჩამონათვალშიც გვხვდება. გამოტოვებული პოზიციები JSON-ში არ შეიტანო.)`;
+    let prompt;
+
+    if (hasOurXls) {
+      // სცენარი A: ორივე XLS გვაქვს — შევადაროთ
+      const ourBuf = await sbStorageDownload(ourFiles[0].path);
+      if (!ourBuf) return res.status(500).json({ error: 'XLS ვერ ჩამოიტვირთა Storage-დან' });
+      const ourText = xlsText(ourBuf);
+      prompt =
+        `შეადარე ორი XLS ფაილი:\n\n` +
+        `=== ჩვენი სამუშაოთა ჩამონათვალი ===\n${ourText}\n\n` +
+        `=== კონტრაქტორის (${cname}) განფასება ===\n${contrText}\n\n` +
+        `გამოავლინე შეუსაბამობები. დასახელებების დასაბმელად — ჭკვიანი matching ` +
+        `(case-insensitive, სინონიმები, მოქნილი ფორმულირება). ` +
+        `მხოლოდ მნიშვნელოვანი სხვაობები (>5% ან სრულად გამოტოვებული).\n\n` +
+        `უპასუხე ამ სტრუქტურით (Markdown):\n\n` +
+        `## ფასობრივი შეუსაბამობები\n` +
+        `| სამუშაო | ჩვენი ერთ.ფასი | კონტ. ერთ.ფასი | სხვაობა | % |\n|---|---|---|---|---|\n\n` +
+        `## გამოტოვებული პოზიციები (ჩვენთან → კონტრაქტორთან არა)\n- ...\n\n` +
+        `## ზედმეტი პოზიციები (კონტრაქტორთან → ჩვენთან არა)\n- ...\n\n` +
+        `## დასკვნა\n2-3 წინადადება: ჯამური სხვაობა, მთავარი რისკები.\n\n` +
+        `ბოლოს, მხოლოდ ერთი JSON მასივი, ზუსტად ამ ფორმატით:\n` +
+        `---JSON_PRICES---\n` +
+        `[{"work_name":"სამუშაოს სახელი","quantity":10,"unit":"მ²","unit_price":50.0}]\n` +
+        `---JSON_END---\n` +
+        `(მხოლოდ კონტ. პოზიციები რომლებიც ჩვენს ჩამონათვალშიც გვხვდება.)`;
+    } else {
+      // სცენარი B: მხოლოდ კონტრაქტორის XLS — ამოიღე ყველა ფასიანი პოზიცია
+      prompt =
+        `ეს არის კონტრაქტორის (${cname}) განფასების XLS ფაილი:\n\n${contrText}\n\n` +
+        `გააანალიზე და მომეც:\n\n` +
+        `## სამუშაოთა ჩამონათვალი და ფასები\n` +
+        `| # | სამუშაო | ერთ. | რაოდ. | ერთ.ფასი | ჯამი |\n|---|---|---|---|---|---|\n\n` +
+        `## დასკვნა\nმოკლე შეჯამება: სულ პოზიციები, სულ ღირებულება, მთავარი სამუშაო კატეგორიები.\n\n` +
+        `ბოლოს, მხოლოდ ერთი JSON მასივი, ზუსტად ამ ფორმატით:\n` +
+        `---JSON_PRICES---\n` +
+        `[{"work_name":"სამუშაოს სახელი","quantity":10,"unit":"მ²","unit_price":50.0}]\n` +
+        `---JSON_END---\n` +
+        `(ყველა ფასიანი პოზიცია, unit_price > 0)`;
+    }
 
     const raw = await callAI(
       'შენ ხარ ტექნიკური და ფინანსური ექსპერტი. XLS შედარება — ზუსტი, კონკრეტული, ქართულად.',
