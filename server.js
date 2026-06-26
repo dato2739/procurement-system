@@ -254,7 +254,7 @@ function contentTypeFor(originalname) {
 }
 
 // ── Health check ──────────────────────────────────────────────
-app.get('/', (_, res) => res.json({ status: 'ok', version: '3.1' }));
+app.get('/', (_, res) => res.json({ status: 'ok', version: '3.2' }));
 
 // ── GET /request/:id — single request fetch ──
 app.get('/request/:id', async (req, res) => {
