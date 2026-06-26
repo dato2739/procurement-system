@@ -1531,6 +1531,16 @@ app.post('/pricing-save', upload.single('contractor_file'), async (req, res) => 
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+
+// ── DELETE /price/:id — ცალკეული ფასის წაშლა ──
+app.delete('/price/:id', async (req, res) => {
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/unit_prices?id=eq.${req.params.id}`,
+      { method: 'DELETE', headers: SB_H() });
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── GET /backup — სრული ბექაპი: requests + unit_prices + ყველა ფაილი ──
 app.get('/backup', async (req, res) => {
   try {
