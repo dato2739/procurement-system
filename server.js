@@ -755,9 +755,7 @@ app.post('/compare-pricing', upload.single('contractor_file'), async (req, res) 
 
     const contrText = xlsText(cf.buffer);
 
-    // Upload contractor file to storage
-    const cfPath = `${requestId}/contractor/${cf.originalname}`;
-    await sbStorageUpload(cfPath, cf.buffer, contentTypeFor(cf.originalname));
+    // ფაილი Storage-ში ინახება მხოლოდ /pricing-save-ზე (მომხმარებლის დადასტურებისას)
 
     const cname = contractorName || 'კონტრაქტორი';
     let prompt;
@@ -1395,26 +1393,52 @@ app.delete('/summary/:sumId', async (req, res) => {
 });
 
 
-// ── POST /pricing-save — ფასების ხელით შენახვა შედარების შემდეგ ──
-app.post('/pricing-save', async (req, res) => {
+// ── POST /pricing-save — ფაილი Storage-ში + ფასები ბაზაში ──
+app.post('/pricing-save', upload.single('contractor_file'), async (req, res) => {
   try {
-    const { requestId, contractorId, contractorName, priceItems, currency, pricingDate, filePath } = req.body;
-    if (!requestId || !priceItems) return res.status(400).json({ error: 'requestId და priceItems სავალდებულოა' });
+    const { requestId, contractorId, contractorName, priceItems: priceItemsRaw, currency, pricingDate } = req.body;
+    if (!requestId || !priceItemsRaw) return res.status(400).json({ error: 'requestId და priceItems სავალდებულოა' });
+
+    let priceItems = [];
+    try { priceItems = JSON.parse(priceItemsRaw); } catch(e) { return res.status(400).json({ error: 'priceItems JSON parse error' }); }
 
     const row = await sbGetRequest(requestId);
     if (!row) return res.status(404).json({ error: 'მოთხოვნა ვერ მოიძებნა' });
 
-    const cur = currency || '₾';
-    const dt  = pricingDate || new Date().toISOString().slice(0,10);
+    const cur   = currency || '₾';
+    const dt    = pricingDate || new Date().toISOString().slice(0,10);
     const cname = contractorName || 'კონტრაქტორი';
-    let saved = 0;
 
+    // 1. ფაილი Storage-ში (თუ გადმოეცა)
+    let fileUploaded = false;
+    if (req.file) {
+      const cf = req.file;
+      const cfExt     = cf.originalname.split('.').pop().toLowerCase();
+      const cfSafeKey = `contractor_${Date.now()}.${cfExt}`;
+      const cfPath    = `${requestId}/contractor/${cfSafeKey}`;
+      fileUploaded    = await sbStorageUpload(cfPath, cf.buffer, contentTypeFor(cf.originalname));
+      if (fileUploaded) {
+        const existingFiles = row.files || [];
+        existingFiles.push({
+          name: cf.originalname,
+          path: cfPath,
+          size: cf.size || 0,
+          type: contentTypeFor(cf.originalname),
+          tag:  'contractor'
+        });
+        await sbSave({ id: requestId, files: existingFiles, updated_at: new Date().toISOString() });
+      }
+    }
+
+    // 2. ფასები unit_prices-ში
+    let saved = 0;
     const errors = [];
     for (const item of priceItems) {
       if (!item.work_name || !item.unit_price) continue;
       const payload = {
         id:           'up_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
         project_name: row.project || row.num || '',
+        request_num:  row.num || '',
         contractor:   cname,
         work_name:    item.work_name,
         quantity:     parseFloat(item.quantity) || 0,
@@ -1424,25 +1448,21 @@ app.post('/pricing-save', async (req, res) => {
         date:         dt,
         request_id:   requestId
       };
-      // request_num სვეტი თუ არსებობს
-      try { payload.request_num = row.num || ''; } catch(e) {}
-      // contractor_id სვეტი თუ არსებობს
-      if (contractorId) { try { payload.contractor_id = contractorId; } catch(e) {} }
+      if (contractorId) payload.contractor_id = contractorId;
 
       const r = await fetch(`${SUPABASE_URL}/rest/v1/unit_prices`, {
         method: 'POST',
         headers: { ...SB_H(), 'Prefer': 'return=minimal' },
         body: JSON.stringify(payload)
       });
-      if (r.ok || r.status === 201) {
-        saved++;
-      } else {
+      if (r.ok || r.status === 201) { saved++; }
+      else {
         const errText = await r.text();
         errors.push({ item: item.work_name, status: r.status, err: errText.slice(0,200) });
       }
     }
 
-    res.json({ ok: true, saved, errors: errors.length ? errors : undefined });
+    res.json({ ok: true, saved, fileUploaded, errors: errors.length ? errors : undefined });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
