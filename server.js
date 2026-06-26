@@ -1409,30 +1409,40 @@ app.post('/pricing-save', async (req, res) => {
     const cname = contractorName || 'კონტრაქტორი';
     let saved = 0;
 
+    const errors = [];
     for (const item of priceItems) {
       if (!item.work_name || !item.unit_price) continue;
+      const payload = {
+        id:           'up_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
+        project_name: row.project || row.num || '',
+        contractor:   cname,
+        work_name:    item.work_name,
+        quantity:     parseFloat(item.quantity) || 0,
+        unit:         item.unit || '',
+        unit_price:   parseFloat(item.unit_price) || 0,
+        currency:     cur,
+        date:         dt,
+        request_id:   requestId
+      };
+      // request_num სვეტი თუ არსებობს
+      try { payload.request_num = row.num || ''; } catch(e) {}
+      // contractor_id სვეტი თუ არსებობს
+      if (contractorId) { try { payload.contractor_id = contractorId; } catch(e) {} }
+
       const r = await fetch(`${SUPABASE_URL}/rest/v1/unit_prices`, {
         method: 'POST',
         headers: { ...SB_H(), 'Prefer': 'return=minimal' },
-        body: JSON.stringify({
-          id:           'up_' + Date.now() + '_' + Math.random().toString(36).slice(2,6),
-          project_name: row.project || row.num || '',
-          request_num:  row.num || '',
-          contractor:   cname,
-          contractor_id: contractorId || null,
-          work_name:    item.work_name,
-          quantity:     parseFloat(item.quantity) || 0,
-          unit:         item.unit || '',
-          unit_price:   parseFloat(item.unit_price) || 0,
-          currency:     cur,
-          date:         dt,
-          request_id:   requestId
-        })
+        body: JSON.stringify(payload)
       });
-      if (r.ok || r.status === 201) saved++;
+      if (r.ok || r.status === 201) {
+        saved++;
+      } else {
+        const errText = await r.text();
+        errors.push({ item: item.work_name, status: r.status, err: errText.slice(0,200) });
+      }
     }
 
-    res.json({ ok: true, saved });
+    res.json({ ok: true, saved, errors: errors.length ? errors : undefined });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
