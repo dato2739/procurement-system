@@ -256,6 +256,15 @@ function contentTypeFor(originalname) {
 // ── Health check ──────────────────────────────────────────────
 app.get('/', (_, res) => res.json({ status: 'ok', version: '3.1' }));
 
+// ── GET /request/:id — single request fetch ──
+app.get('/request/:id', async (req, res) => {
+  try {
+    const row = await sbGetRequest(req.params.id);
+    if (!row) return res.status(404).json({ error: 'not found' });
+    res.json(row);
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── DELETE /request/:id — removes DB row + all storage files + linked prices ──
 app.delete('/request/:id', async (req, res) => {
   try {
