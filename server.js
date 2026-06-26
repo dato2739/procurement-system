@@ -1416,6 +1416,48 @@ app.delete('/summary/:sumId', async (req, res) => {
 });
 
 
+
+// ── POST /pricing-save-direct — ფაილიდან ამოიღე ფასები + Storage + ბაზა ──
+app.post('/pricing-save-direct', upload.single('contractor_file'), async (req, res) => {
+  try {
+    const { requestId, contractorId, contractorName, currency, pricingDate } = req.body;
+    if (!requestId || !req.file) return res.status(400).json({ error: 'requestId და ფაილი სავალდებულოა' });
+
+    const row = await sbGetRequest(requestId);
+    if (!row) return res.status(404).json({ error: 'მოთხოვნა ვერ მოიძებნა' });
+
+    const cf    = req.file;
+    const cur   = currency || '₾';
+    const dt    = pricingDate || new Date().toISOString().slice(0,10);
+    const cname = contractorName || 'კონტრაქტორი';
+
+    // 1. ფაილი Storage-ში
+    const cfExt     = cf.originalname.split('.').pop().toLowerCase();
+    const cfSafeKey = `contractor_${Date.now()}.${cfExt}`;
+    const cfPath    = `${requestId}/contractor/${cfSafeKey}`;
+    const fileUploaded = await sbStorageUpload(cfPath, cf.buffer, contentTypeFor(cf.originalname));
+    if (fileUploaded) {
+      const existingFiles = row.files || [];
+      existingFiles.push({ name: cf.originalname, path: cfPath, size: cf.size || 0, type: contentTypeFor(cf.originalname), tag: 'contractor' });
+      await sbSave({ id: requestId, files: existingFiles, updated_at: new Date().toISOString() });
+    }
+
+    // 2. ფასების ამოღება XLS-დან (direct parser)
+    const items = await extractAndSavePrices(cf.buffer, cf.originalname, {
+      projectName: row.project || row.num || '',
+      contractor:  cname,
+      requestNum:  row.num || '',
+      currency:    cur,
+      date:        dt
+    });
+
+    res.json({ ok: true, saved: items, fileUploaded });
+  } catch(e) {
+    console.error('pricing-save-direct:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── POST /pricing-save — ფაილი Storage-ში + ფასები ბაზაში ──
 app.post('/pricing-save', upload.single('contractor_file'), async (req, res) => {
   try {
