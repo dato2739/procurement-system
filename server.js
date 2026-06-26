@@ -301,6 +301,20 @@ app.delete('/request/:id', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+// ── GET /file-by-path — path-ით ჩამოტვირთვა (კონტრაქტორის ფაილებისთვის)
+app.get('/file-by-path', async (req, res) => {
+  try {
+    const path = req.query.path;
+    const name = req.query.name || path.split('/').pop();
+    if (!path) return res.status(400).send('path required');
+    const buf = await sbStorageDownload(path);
+    if (!buf) return res.status(404).send('ფაილი ვერ მოიძებნა');
+    res.setHeader('Content-Type', contentTypeFor(name));
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(name)}"`);
+    res.send(buf);
+  } catch(e) { res.status(500).send(e.message); }
+});
+
 app.get('/file/:requestId/:filename', async (req, res) => {
   try {
     const path = `${req.params.requestId}/${req.params.filename}`;
