@@ -254,7 +254,7 @@ function contentTypeFor(originalname) {
 }
 
 // ── Health check ──────────────────────────────────────────────
-app.get('/', (_, res) => res.json({ status: 'ok', version: '3.3' }));
+app.get('/', (_, res) => res.json({ status: 'ok', version: '3.4' }));
 
 // ── GET /request/:id — single request fetch ──
 app.get('/request/:id', async (req, res) => {
@@ -1056,6 +1056,31 @@ app.get('/prices', async (req, res) => {
     res.json({ items: all });
   } catch (e) {
     console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /requests-list — ყველა request (service-role key, RLS-ს ეხვევა) ──
+// ემატება იმისთვის, რომ frontend-მა აღარ გამოიყენოს პირდაპირი Supabase anon-key
+// fetch (რომელიც RLS policy-ებით შეიძლება შეიზღუდოს).
+app.get('/requests-list', async (req, res) => {
+  try {
+    if (!SUPABASE_URL || !SUPABASE_KEY) return res.json({ items: [] });
+    let all = [];
+    let from = 0;
+    for (let i = 0; i < 50; i++) {
+      const r = await fetch(
+        `${SUPABASE_URL}/rest/v1/requests?select=*&order=created_at.desc`,
+        { headers: { ...SB_H(), 'Range-Unit': 'items', 'Range': `${from}-${from + 999}` } }
+      );
+      const batch = await r.json();
+      if (!Array.isArray(batch) || batch.length === 0) break;
+      all = all.concat(batch);
+      if (batch.length < 1000) break;
+      from += 1000;
+    }
+    res.json({ items: all });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
