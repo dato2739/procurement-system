@@ -254,7 +254,7 @@ function contentTypeFor(originalname) {
 }
 
 // ── Health check ──────────────────────────────────────────────
-app.get('/', (_, res) => res.json({ status: 'ok', version: '3.2' }));
+app.get('/', (_, res) => res.json({ status: 'ok', version: '3.3' }));
 
 // ── GET /request/:id — single request fetch ──
 app.get('/request/:id', async (req, res) => {
@@ -1056,6 +1056,71 @@ app.get('/prices', async (req, res) => {
     res.json({ items: all });
   } catch (e) {
     console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /prices-audit — ფასების ბაზასა და requests-ს შორის შესაბამისობის შემოწმება ──
+// არაფერს ცვლის/შლის — მხოლოდ ადარებს unit_prices.request_id-ს (num) და requests.num-ს.
+app.get('/prices-audit', async (req, res) => {
+  try {
+    if (!SUPABASE_URL || !SUPABASE_KEY) return res.json({ error: 'Supabase არ არის კონფიგურირებული' });
+
+    // 1. ყველა request-ის num
+    let requests = [];
+    { let from = 0;
+      for (let i = 0; i < 50; i++) {
+        const r = await fetch(
+          `${SUPABASE_URL}/rest/v1/requests?select=id,num,project`,
+          { headers: { ...SB_H(), 'Range-Unit': 'items', 'Range': `${from}-${from + 999}` } }
+        );
+        const batch = await r.json();
+        if (!Array.isArray(batch) || batch.length === 0) break;
+        requests = requests.concat(batch);
+        if (batch.length < 1000) break;
+        from += 1000;
+      }
+    }
+    const requestNums = new Set(requests.map(r => String(r.num || r.id)));
+
+    // 2. ყველა unit_prices-ის request_id + project_name
+    let prices = [];
+    { let from = 0;
+      for (let i = 0; i < 50; i++) {
+        const r = await fetch(
+          `${SUPABASE_URL}/rest/v1/unit_prices?select=request_id,project_name,contractor,created_at`,
+          { headers: { ...SB_H(), 'Range-Unit': 'items', 'Range': `${from}-${from + 999}` } }
+        );
+        const batch = await r.json();
+        if (!Array.isArray(batch) || batch.length === 0) break;
+        prices = prices.concat(batch);
+        if (batch.length < 1000) break;
+        from += 1000;
+      }
+    }
+
+    // 3. ჯგუფირება request_id-ით (თითო "პროექტი" ფასების ბაზაში)
+    const priceGroups = {};
+    for (const p of prices) {
+      const rid = String(p.request_id || '');
+      if (!priceGroups[rid]) priceGroups[rid] = { request_id: rid, project_name: p.project_name, contractor: p.contractor, rows: 0 };
+      priceGroups[rid].rows++;
+    }
+    const priceProjects = Object.values(priceGroups);
+
+    // 4. ორფანები — ფასების ბაზაშია, მაგრამ requests-ში ასეთი num არ არსებობს
+    const orphaned = priceProjects.filter(p => !requestNums.has(p.request_id));
+    // requests, რომლებსაც საერთოდ არ აქვს ფასი (ეს ნორმალურია — ბევრ request-ს ჯერ ფასი არ ჰქონია)
+    const requestsWithoutPrices = requests.filter(r => !priceGroups[String(r.num || r.id)]);
+
+    res.json({
+      totalRequests: requests.length,
+      totalPriceProjects: priceProjects.length,
+      orphanedCount: orphaned.length,
+      orphaned, // ეს ჩანაწერები "დაკარგულია" requests-თან კავშირში — num შეცვლილა ან request წაშლილა
+      requestsWithoutPricesCount: requestsWithoutPrices.length
+    });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
