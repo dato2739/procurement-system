@@ -498,7 +498,13 @@ textarea { resize: vertical; min-height: 80px; line-height: 1.5; }
 
       <!-- CHAT SECTION -->
       <div id="chatSection" style="display:none;margin-top:16px;">
-        <div class="section-title" style="margin-top:0">💬 კითხვა-პასუხი</div>
+        <div class="section-title" style="margin-top:0;display:flex;align-items:center;justify-content:space-between;gap:10px;">
+          <span>💬 კითხვა-პასუხი</span>
+          <label style="display:flex;align-items:center;gap:6px;font-size:11px;font-weight:400;color:var(--text2);cursor:pointer;user-select:none;" title="ჩართული — CLAUDE.md წესებზე დაფუძნებული ტექნიკური პასუხი, ციტირებით. გამორთული — ძველი, ზოგადი პასუხი.">
+            <input type="checkbox" id="deepAnalysisToggle" checked onchange="deepAnalysisEnabled = this.checked" style="cursor:pointer;">
+            🔬 ღრმა ტექნიკური ანალიზი
+          </label>
+        </div>
         <div id="chatMessages" style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px;max-height:400px;overflow-y:auto;"></div>
         <div style="display:flex;gap:8px;">
           <input type="text" id="chatInput" placeholder="დასვი კითხვა ფაილების შესახებ..."
@@ -1356,6 +1362,7 @@ let clarifyQuestions = [];
 let clarifyAnswers = {};
 let chatHistory = []; // [{role, text}]
 let chatFileContext = ''; // summarized file content for chat
+let deepAnalysisEnabled = true; // ჩართვის ღილაკი: წესებზე დაფუძნებული ტექნიკური ჩატი (თუ false — ძველი ლოგიკა)
 let pricingFile = null; // contractor XLS file object
 let importFiles = []; // bulk import XLS files
 
@@ -1875,6 +1882,7 @@ async function sendChat() {
     fd.append('project', currentId ? (db.find(x=>x.id===currentId)||{}).project||'' : '');
     fd.append('num', currentId ? (db.find(x=>x.id===currentId)||{}).num||'' : '');
     fd.append('question', question);
+    fd.append('deepAnalysis', deepAnalysisEnabled ? 'true' : 'false');
     fd.append('requestId', currentId || '');
     fd.append('chatHistory', JSON.stringify(chatHistory.slice(0,-1).map(m=>({role: m.role==='user'?'user':'assistant', text: m.text}))));
     // attach files if in memory

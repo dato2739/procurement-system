@@ -258,7 +258,7 @@ function contentTypeFor(originalname) {
 }
 
 // ── Health check ──────────────────────────────────────────────
-app.get('/', (_, res) => res.json({ status: 'ok', version: '3.5' }));
+app.get('/', (_, res) => res.json({ status: 'ok', version: '3.6' }));
 
 // ── GET /request/:id — single request fetch ──
 app.get('/request/:id', async (req, res) => {
@@ -403,12 +403,15 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
       }
       messages.push({ role: 'user', content: question });
 
-      // წესებზე დაფუძნებული ტექნიკური ჩატი — CLAUDE.md + შესაბამისი agent + KB
-      // (review_engine.js), ზოგადი systemPrompt-ის ნაცვლად. სრული ანალიზი/ფასების
-      // შედარება (ქვემოთ, else-ტოტში) უცვლელი რჩება — მხოლოდ ჩატი იცვლება.
-      const chatSystemPrompt = reviewEngine.buildSystemPrompt(question);
-      const answer = await callAIWithTokens(chatSystemPrompt, messages, 4096, CHAT_MODEL);
-      return res.json({ type: 'chat', answer });
+      // ჩართვის ღილაკი (frontend-იდან, deepAnalysis ველი) ირჩევს: წესებზე დაფუძნებული
+      // ტექნიკური ჩატი (CLAUDE.md + შესაბამისი agent + KB, review_engine.js) ან ძველი,
+      // ზოგადი ლოგიკა (systemPrompt + Haiku) — ნაგულისხმევად ჩართული. სრული ანალიზი/
+      // ფასების შედარება (ქვემოთ, else-ტოტში) ორივე შემთხვევაში უცვლელი რჩება.
+      const useDeepAnalysis = req.body.deepAnalysis !== 'false';
+      const chatSystemPrompt = useDeepAnalysis ? reviewEngine.buildSystemPrompt(question) : systemPrompt;
+      const chatModel = useDeepAnalysis ? CHAT_MODEL : MODEL;
+      const answer = await callAIWithTokens(chatSystemPrompt, messages, 4096, chatModel);
+      return res.json({ type: 'chat', answer, deepAnalysis: useDeepAnalysis });
 
     } else {
       if (msgContent.length === 0) {
