@@ -28,7 +28,11 @@ const ANTHROPIC_KEY = process.env.ANTHROPIC_KEY;
 const SUPABASE_URL  = process.env.SUPABASE_URL;
 const SUPABASE_KEY  = process.env.SUPABASE_KEY;
 const MODEL         = 'claude-haiku-4-5-20251001';
+// წესებზე დაფუძნებული ტექნიკური ჩატისთვის (review_engine.js) — რთული, მრავალწესიანი
+// კონტექსტის საიმედოდ დასამუშავებლად საჭიროა უფრო ძლიერი მოდელი, ვიდრე Haiku.
+const CHAT_MODEL     = 'claude-sonnet-5';
 const BUCKET        = 'project-files';
+const reviewEngine  = require('./review_engine');
 
 // ── Supabase DB helper ──────────────────────────────────────────
 const SB_H = () => ({
@@ -254,7 +258,7 @@ function contentTypeFor(originalname) {
 }
 
 // ── Health check ──────────────────────────────────────────────
-app.get('/', (_, res) => res.json({ status: 'ok', version: '3.4' }));
+app.get('/', (_, res) => res.json({ status: 'ok', version: '3.5' }));
 
 // ── GET /request/:id — single request fetch ──
 app.get('/request/:id', async (req, res) => {
@@ -399,7 +403,11 @@ app.post('/analyze', upload.array('files', 20), async (req, res) => {
       }
       messages.push({ role: 'user', content: question });
 
-      const answer = await callAI(systemPrompt, messages);
+      // წესებზე დაფუძნებული ტექნიკური ჩატი — CLAUDE.md + შესაბამისი agent + KB
+      // (review_engine.js), ზოგადი systemPrompt-ის ნაცვლად. სრული ანალიზი/ფასების
+      // შედარება (ქვემოთ, else-ტოტში) უცვლელი რჩება — მხოლოდ ჩატი იცვლება.
+      const chatSystemPrompt = reviewEngine.buildSystemPrompt(question);
+      const answer = await callAIWithTokens(chatSystemPrompt, messages, 4096, CHAT_MODEL);
       return res.json({ type: 'chat', answer });
 
     } else {
@@ -504,7 +512,7 @@ async function callAI(system, messages) {
   return callAIWithTokens(system, messages, 4096);
 }
 
-async function callAIWithTokens(system, messages, maxTokens) {
+async function callAIWithTokens(system, messages, maxTokens, model) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -512,7 +520,7 @@ async function callAIWithTokens(system, messages, maxTokens) {
       'x-api-key':         ANTHROPIC_KEY,
       'anthropic-version': '2023-06-01'
     },
-    body: JSON.stringify({ model: MODEL, max_tokens: maxTokens || 4096, system, messages })
+    body: JSON.stringify({ model: model || MODEL, max_tokens: maxTokens || 4096, system, messages })
   });
   const d = await r.json();
   if (d.error) throw new Error(d.error.message);
